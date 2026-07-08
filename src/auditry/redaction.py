@@ -1,8 +1,13 @@
 from typing import Any, Dict, List, Set
 
 
+# The maintained credential/secret redaction list. Any new credential or
+# token type should be added here or excluded from persistence entirely.
+# "token" partial-matches access_token/refresh_token/id_token/session_token
+# etc.; entries below are kept explicit anyway so the list documents intent.
 DEFAULT_REDACTION_PATTERNS: List[str] = [
     "password",
+    "passwd",
     "token",
     "api_key",
     "apikey",
@@ -15,6 +20,19 @@ DEFAULT_REDACTION_PATTERNS: List[str] = [
     "x-api-key",
     "cookie",
     "set-cookie",
+    "jwt",
+    "bearer",
+    "otp",
+    "one_time_password",
+    "access_key",
+    "private_key",
+    "signature",
+    "credential",
+    "x-auth",
+    "x-amz-security-token",
+    "proxy-authorization",
+    "csrf",
+    "xsrf",
 ]
 
 REDACTED_VALUE = "[REDACTED]"

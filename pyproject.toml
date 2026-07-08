@@ -1,6 +1,6 @@
 [project]
 name = "auditry"
-version = "0.3.0"
+version = "0.4.0"
 description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, and sensitive data redaction"
 authors = [
     {name = "Liv Stark", email = "livstark.work@gmail.com"}

@@ -73,9 +73,12 @@ class RequestResponseLogger:
         if self.config.log_request_headers and raw_data.get("headers"):
             prepared["headers"] = redact_headers(raw_data["headers"])
 
-        # Add query params if configured
+        # Add query params if configured (redacted — a token in a query
+        # string must not bypass the redaction list)
         if self.config.log_query_params and raw_data.get("query_params"):
-            prepared["query_params"] = raw_data["query_params"]
+            prepared["query_params"] = redact_data(
+                raw_data["query_params"], self.additional_redaction_patterns
+            )
 
         # Add path params (always included if present)
         if raw_data.get("path_params"):
@@ -184,19 +187,29 @@ class RequestResponseLogger:
         """
         self._bind_context(correlation_id, user_id)
 
-        # Build log entry
+        # Build log entry.
+        # The error TYPE and correlation ID are safe to log freely. The
+        # exception MESSAGE and traceback can interpolate sensitive user
+        # content, so they are not serialized here — exc_info is passed
+        # through so the configured processor extracts error_type and routes
+        # the full trace to the gated handler, if any (see
+        # auditry.logging_config.set_trace_handler).
         log_entry = {
             "service": self.service_name,
             "request": request_data,
             "execution_duration_ms": duration_ms,
+            "error_type": type(error).__name__,
+            # Kept for backward compatibility with existing dashboards:
             "exception_type": type(error).__name__,
-            "exception_message": str(error),
         }
+        if self.config.log_exception_messages:
+            # Explicit opt-in only — see the note on the config field.
+            log_entry["exception_message"] = str(error)
 
         # Log the error
         self.logger.error(
             f"Request failed: {request_data['method']} {request_data['path']} - "
-            f"Error: {type(error).__name__}: {str(error)} - Duration: {duration_ms:.2f}ms",
+            f"Error: {type(error).__name__} - Duration: {duration_ms:.2f}ms",
             exc_info=True,
             **log_entry
         )

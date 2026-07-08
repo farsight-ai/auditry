@@ -1,0 +1,226 @@
+"""
+CloudWatch metrics via Embedded Metric Format (EMF) — stdlib only.
+
+EMF writes metrics as structured JSON log lines that CloudWatch extracts
+server-side, so there is no SDK dependency, no network call on the hot path,
+and the awslogs driver ships them with the ordinary log stream.
+
+Conventions enforced here:
+
+- ``dependency_call()`` times every dependency and counts success/error
+  per resource.
+- a counter per error reason (exception class name), and ``zero()`` for
+  emitting zero counts on conditions you alarm on (keeps "no data" alarms
+  meaningful).
+- metric dimensions must never contain PII or user content: dimension names
+  are validated against a forbidden list (userId, email, file names,
+  prompts, ...) and a violation raises immediately rather than emitting —
+  metrics platforms are unencrypted, widely readable, and unerasable.
+  Aggregate by opaque tenant/org ID, never by a user-entered value.
+
+Usage:
+
+```python
+from auditry.metrics import MetricsLogger
+
+metrics = MetricsLogger(namespace="MyCompany/MyService", service="my-service")
+
+with metrics.dependency_call("redis"):
+    value = await cache.get(key)
+
+metrics.count("SchemaValidationFailed", 0)   # zero count keeps alarms alive
+```
+"""
+
+import json
+import sys
+import time
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
+
+__all__ = ["MetricsLogger", "ForbiddenDimensionError"]
+
+# Dimension names that indicate PII or user content. Substring match,
+# case/format-insensitive ("userId", "user_id", "USER-ID" all match).
+FORBIDDEN_DIMENSION_PATTERNS = (
+    "userid",
+    "username",
+    "useremail",
+    "email",
+    "filename",
+    "filepath",
+    "objectkey",
+    "document",
+    "prompt",
+    "completion",
+    "message",
+    "title",
+    "query",
+    "ticker",
+    "ssn",
+    "phone",
+    "address",
+    "firstname",
+    "lastname",
+    "fullname",
+)
+
+_MAX_DIMENSIONS = 8  # CloudWatch EMF hard limit is 30; keep cardinality sane.
+
+
+class ForbiddenDimensionError(ValueError):
+    """Raised when a metric dimension would carry PII or user content."""
+
+
+def _normalize(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _validate_dimensions(dimensions: Dict[str, str]) -> None:
+    for key in dimensions:
+        norm = _normalize(key)
+        for pattern in FORBIDDEN_DIMENSION_PATTERNS:
+            if pattern in norm:
+                raise ForbiddenDimensionError(
+                    f"Metric dimension '{key}' matches forbidden pattern "
+                    f"'{pattern}' — metric dimensions must never carry PII or "
+                    "user content (they are unencrypted, widely readable, and "
+                    "unerasable). Aggregate by an opaque tenant/org ID instead."
+                )
+    if len(dimensions) > _MAX_DIMENSIONS:
+        raise ValueError(
+            f"{len(dimensions)} dimensions exceeds the sane-cardinality cap "
+            f"of {_MAX_DIMENSIONS}; every dimension set is a distinct metric."
+        )
+
+
+class MetricsLogger:
+    """
+    Minimal EMF emitter with dimension validation.
+
+    Args:
+        namespace: CloudWatch namespace (e.g. ``MyCompany/MyService``).
+        service: Service name added as a default dimension.
+        default_dimensions: Extra default dimensions (validated).
+        sink: Writable used for output; defaults to stdout. Tests can pass
+            a StringIO.
+    """
+
+    def __init__(
+        self,
+        namespace: str,
+        service: Optional[str] = None,
+        default_dimensions: Optional[Dict[str, str]] = None,
+        sink: Any = None,
+    ):
+        self.namespace = namespace
+        self.default_dimensions: Dict[str, str] = {}
+        if service:
+            self.default_dimensions["Service"] = service
+        if default_dimensions:
+            self.default_dimensions.update(default_dimensions)
+        _validate_dimensions(self.default_dimensions)
+        self._sink = sink if sink is not None else sys.stdout
+
+    # -- core ---------------------------------------------------------------
+
+    def emit(
+        self,
+        metrics: Dict[str, float],
+        unit: str = "Count",
+        dimensions: Optional[Dict[str, str]] = None,
+        units: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Emit one EMF record carrying one or more metric values.
+
+        ``units`` overrides ``unit`` per metric name where they differ
+        (e.g. ``{"Latency": "Milliseconds"}``).
+        """
+        dims = dict(self.default_dimensions)
+        if dimensions:
+            _validate_dimensions(dimensions)
+            dims.update(dimensions)
+
+        record: Dict[str, Any] = {
+            "_aws": {
+                "Timestamp": int(time.time() * 1000),
+                "CloudWatchMetrics": [
+                    {
+                        "Namespace": self.namespace,
+                        "Dimensions": [list(dims.keys())] if dims else [[]],
+                        "Metrics": [
+                            {"Name": name, "Unit": (units or {}).get(name, unit)}
+                            for name in metrics
+                        ],
+                    }
+                ],
+            },
+            **dims,
+            **metrics,
+        }
+        # Single-line JSON on the standard stream (O1.4/O4.7).
+        self._sink.write(json.dumps(record, default=str) + "\n")
+
+    # -- conveniences ---------------------------------------------------------
+
+    def count(
+        self, name: str, value: float = 1, dimensions: Optional[Dict[str, str]] = None
+    ) -> None:
+        """Counter. Use ``value=0`` to keep alarmable metrics alive."""
+        self.emit({name: value}, unit="Count", dimensions=dimensions)
+
+    def zero(self, *names: str, dimensions: Optional[Dict[str, str]] = None) -> None:
+        """Emit zero counts for rare conditions you alarm on — monitoring
+        systems forget metrics that go silent, and zero counts enable
+        "no data" alarms."""
+        self.emit({name: 0 for name in names}, unit="Count", dimensions=dimensions)
+
+    def timing(
+        self, name: str, milliseconds: float, dimensions: Optional[Dict[str, str]] = None
+    ) -> None:
+        """Latency value in milliseconds."""
+        self.emit({name: milliseconds}, unit="Milliseconds", dimensions=dimensions)
+
+    @contextmanager
+    def dependency_call(
+        self,
+        dependency: str,
+        resource: Optional[str] = None,
+    ) -> Iterator[None]:
+        """
+        Time a dependency call and count success/error, with the error
+        reason (exception class name) as an ErrorType dimension.
+
+        ```python
+        with metrics.dependency_call("dynamodb", resource="jobs-table"):
+            table.get_item(...)
+        ```
+
+        Emits ``Latency`` (ms), ``Success`` and ``Error`` counts under the
+        ``Dependency`` (+ optional ``Resource``) dimension — success emits
+        ``Error: 0`` and vice versa, so no-data alarms work.
+        """
+        dims: Dict[str, str] = {"Dependency": dependency}
+        if resource:
+            dims["Resource"] = resource
+        start = time.perf_counter()
+        try:
+            yield
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            self.emit(
+                {"Latency": elapsed_ms, "Success": 0, "Error": 1},
+                units={"Latency": "Milliseconds"},
+                unit="Count",
+                dimensions={**dims, "ErrorType": type(exc).__name__},
+            )
+            raise
+        else:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            self.emit(
+                {"Latency": elapsed_ms, "Success": 1, "Error": 0},
+                units={"Latency": "Milliseconds"},
+                unit="Count",
+                dimensions=dims,
+            )

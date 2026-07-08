@@ -28,10 +28,19 @@ Basic Usage:
 """
 
 from .correlation import get_correlation_id
-from .logging_config import configure_logging, get_logger
+from .logging_config import configure_logging, get_logger, set_trace_handler
+from .metrics import ForbiddenDimensionError, MetricsLogger
 from .models import BusinessEventConfig, ObservabilityConfig
+from .propagation import (
+    bind_correlation_id,
+    bind_from_sqs_message,
+    ensure_correlation_id,
+    outbound_headers,
+    sqs_message_attributes,
+    with_correlation,
+)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Configuration
@@ -40,6 +49,16 @@ __all__ = [
     # Logging
     "configure_logging",
     "get_logger",
-    # Utilities
+    "set_trace_handler",
+    # Correlation & propagation (O3)
     "get_correlation_id",
+    "bind_correlation_id",
+    "ensure_correlation_id",
+    "outbound_headers",
+    "sqs_message_attributes",
+    "bind_from_sqs_message",
+    "with_correlation",
+    # Metrics (O4)
+    "MetricsLogger",
+    "ForbiddenDimensionError",
 ]
