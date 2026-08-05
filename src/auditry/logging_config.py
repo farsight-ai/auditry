@@ -26,7 +26,8 @@ from typing import Any, Callable, Dict, MutableMapping, Optional
 import structlog
 
 # ---------------------------------------------------------------------------
-# Service context (O1.3)
+# Service context — service/version/environment stamped on every log line, so
+# lines stay self-describing when several services share a log destination.
 # ---------------------------------------------------------------------------
 
 _service_context: Dict[str, str] = {}

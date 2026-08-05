@@ -50,7 +50,7 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "set_trace_handler",
-    # Correlation & propagation (O3)
+    # Correlation & propagation
     "get_correlation_id",
     "bind_correlation_id",
     "ensure_correlation_id",
@@ -58,7 +58,7 @@ __all__ = [
     "sqs_message_attributes",
     "bind_from_sqs_message",
     "with_correlation",
-    # Metrics (O4)
+    # Metrics
     "MetricsLogger",
     "ForbiddenDimensionError",
 ]
