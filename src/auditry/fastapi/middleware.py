@@ -68,7 +68,13 @@ class FastAPIMiddleware:
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": raw_body, "more_body": False}
-            return {"type": "http.request", "body": b"", "more_body": False}
+            # Once the buffered body is replayed, defer to the REAL receive so
+            # http.disconnect (and any further client messages) propagate to the
+            # app. Returning a synthetic http.request here instead makes
+            # StreamingResponse.listen_for_disconnect's `while True: await receive()`
+            # a non-yielding hot loop (the coroutine never awaits real I/O), which
+            # starves the single event loop and wedges the process.
+            return await receive()
 
         request = Request(scope, receive=replay_body)
 

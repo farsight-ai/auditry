@@ -45,6 +45,8 @@ all = [
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.0.0",
+    "httpx>=0.24.0",
     "black>=23.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
@@ -75,6 +77,12 @@ line-length = 100
 select = ["E", "F", "W", "I", "N", "B", "C4", "PT", "UP"]
 ignore = ["E501"]
 target-version = "py39"
+
+[tool.pytest.ini_options]
+# Hard ceiling so a regressed event-loop spin (see DEV-1150) fails fast in CI
+# instead of hanging the run indefinitely.
+timeout = 30
+timeout_method = "thread"
 
 [tool.mypy]
 python_version = "3.9"

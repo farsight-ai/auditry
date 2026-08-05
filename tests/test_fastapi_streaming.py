@@ -243,3 +243,40 @@ def test_error_in_streaming_response(app):
         response = client.get("/error-stream")
         # Force reading all content to trigger the error
         _ = response.text
+
+
+@pytest.mark.timeout(10, method="thread")
+def test_non_excluded_streaming_does_not_wedge_event_loop():
+    """Regression (DEV-1150): a StreamingResponse on a NON-excluded path must not
+    busy-spin Starlette's listen_for_disconnect.
+
+    The middleware replaces the ASGI ``receive`` with ``replay_body`` for logged
+    (non-excluded) paths. If ``replay_body`` keeps returning synthetic
+    ``http.request`` messages instead of deferring to the real ``receive``, then
+    ``listen_for_disconnect``'s ``while True: await receive()`` never hits a
+    scheduler checkpoint and never sees ``http.disconnect`` — starving the single
+    event loop and hanging the request forever. The explicit per-test timeout
+    turns that hang into a fast failure rather than a stuck CI run.
+
+    Uses ``application/octet-stream`` (a file-download shape, not
+    ``text/event-stream``) to mirror the export endpoints that wedged in prod.
+    """
+    app = FastAPI()
+    # No excluded_paths -> the endpoint goes through the full logging path that
+    # installs replay_body as `receive`.
+    config = ObservabilityConfig(service_name="test-regression")
+    app = create_middleware(app, config)
+
+    @app.get("/report")
+    async def report_endpoint():
+        async def generate():
+            for i in range(5):
+                yield f"chunk {i}\n".encode()
+
+        return StreamingResponse(generate(), media_type="application/octet-stream")
+
+    client = TestClient(app)
+    response = client.get("/report")
+
+    assert response.status_code == 200
+    assert response.text == "chunk 0\nchunk 1\nchunk 2\nchunk 3\nchunk 4\n"
