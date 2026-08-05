@@ -1,4 +1,5 @@
-"""Tests for auditry.propagation (O3.2/O3.3/O3.4)."""
+"""Tests for auditry.propagation: correlation IDs surviving worker, outbound
+HTTP, and SQS/SNS boundaries."""
 
 import asyncio
 import uuid
@@ -98,9 +99,16 @@ class TestDecorator:
     def test_async_function_binds(self):
         @with_correlation
         async def task(data, correlation_id=None):
+            # The parameter shadows the module-level ContextVar, so read the
+            # bound value through a helper (as the sync case above does).
+            return correlation_id, globals_cid()
+
+        def globals_cid():
             return correlation_id.get()
 
-        assert asyncio.run(task("x", correlation_id="job-99")) == "job-99"
+        passed, bound = asyncio.run(task("x", correlation_id="job-99"))
+        assert passed == "job-99"
+        assert bound == "job-99"
 
     def test_generates_when_absent(self):
         @with_correlation

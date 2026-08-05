@@ -130,17 +130,34 @@ class MetricsLogger:
         unit: str = "Count",
         dimensions: Optional[Dict[str, str]] = None,
         units: Optional[Dict[str, str]] = None,
+        rollup_dimension_sets: Optional[List[List[str]]] = None,
     ) -> None:
         """
         Emit one EMF record carrying one or more metric values.
 
         ``units`` overrides ``unit`` per metric name where they differ
         (e.g. ``{"Latency": "Milliseconds"}``).
+
+        ``rollup_dimension_sets`` adds extra EMF dimension sets (each a list
+        of dimension names, subset of the full set) so the same values are
+        also recorded under coarser dimensions — e.g. record an error under
+        ``[Dependency, ErrorType]`` AND ``[Dependency]`` so alarms can target
+        the coarser series without enumerating error types. One record, no
+        double counting per set.
         """
         dims = dict(self.default_dimensions)
         if dimensions:
             _validate_dimensions(dimensions)
             dims.update(dimensions)
+
+        dimension_sets: List[List[str]] = [list(dims.keys())] if dims else [[]]
+        for rollup in rollup_dimension_sets or []:
+            missing = [k for k in rollup if k not in dims]
+            if missing:
+                raise ValueError(
+                    f"rollup dimension(s) {missing} not present in the record"
+                )
+            dimension_sets.append(list(rollup))
 
         record: Dict[str, Any] = {
             "_aws": {
@@ -148,7 +165,7 @@ class MetricsLogger:
                 "CloudWatchMetrics": [
                     {
                         "Namespace": self.namespace,
-                        "Dimensions": [list(dims.keys())] if dims else [[]],
+                        "Dimensions": dimension_sets,
                         "Metrics": [
                             {"Name": name, "Unit": (units or {}).get(name, unit)}
                             for name in metrics
@@ -159,7 +176,8 @@ class MetricsLogger:
             **dims,
             **metrics,
         }
-        # Single-line JSON on the standard stream (O1.4/O4.7).
+        # Single-line JSON on the standard stream: the log driver ships it,
+        # and CloudWatch extracts the metric values at ingestion.
         self._sink.write(json.dumps(record, default=str) + "\n")
 
     # -- conveniences ---------------------------------------------------------
@@ -209,11 +227,18 @@ class MetricsLogger:
             yield
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
+            full_dims = {**dims, "ErrorType": type(exc).__name__}
             self.emit(
                 {"Latency": elapsed_ms, "Success": 0, "Error": 1},
                 units={"Latency": "Milliseconds"},
                 unit="Count",
-                dimensions={**dims, "ErrorType": type(exc).__name__},
+                dimensions=full_dims,
+                # Also record under the set WITHOUT ErrorType, so alarms and
+                # availability math can target the per-dependency series
+                # without enumerating error types.
+                rollup_dimension_sets=[
+                    [k for k in {**self.default_dimensions, **dims}]
+                ],
             )
             raise
         else:

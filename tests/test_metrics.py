@@ -104,3 +104,30 @@ class TestDependencyCall:
         assert rec["Error"] == 1
         assert rec["Success"] == 0
         assert rec["ErrorType"] == "KeyError"  # error reason counter
+
+
+def test_dependency_call_error_rolls_up_to_dependency_set():
+    """Error emission records under BOTH the full set (with ErrorType) and
+    the coarser per-dependency set, so alarms need not enumerate error types."""
+    import io, json
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    try:
+        with m.dependency_call("db"):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == sorted(
+        map(sorted, [["Service", "Dependency", "ErrorType"], ["Service", "Dependency"]])
+    )
+    assert record["Error"] == 1
+    assert record["ErrorType"] == "RuntimeError"
+
+
+def test_emit_rejects_rollup_dimensions_not_in_record():
+    import io, pytest
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
+    with pytest.raises(ValueError):
+        m.emit({"X": 1}, dimensions={"A": "a"}, rollup_dimension_sets=[["Nope"]])
