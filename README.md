@@ -35,15 +35,28 @@ from fastapi import FastAPI
 from auditry import configure_logging, ObservabilityConfig, get_logger
 from auditry.fastapi import create_middleware
 
-# Configure structured logging at startup
-configure_logging(level="INFO")
+# Configure structured logging at startup.
+# service/version/environment are stamped on every line — pass them here or set
+# SERVICE_NAME / SERVICE_VERSION / ENVIRONMENT.
+configure_logging(
+    level="INFO",
+    service="my-service",
+    version="1.0.0",
+    environment="prod",
+)
 
 app = FastAPI()
 
 # Add observability middleware (single line!)
 app = create_middleware(
     app,
-    config=ObservabilityConfig(service_name="my-service")
+    config=ObservabilityConfig(
+        service_name="my-service",
+        # Set these explicitly — the implicit default is deprecated and will
+        # flip to False. Choose False if you handle customer content.
+        log_request_body=True,
+        log_response_body=True,
+    ),
 )
 
 logger = get_logger(__name__)
@@ -62,14 +75,23 @@ from auditry import configure_logging, ObservabilityConfig, get_logger
 from auditry.quart import create_middleware
 
 # Configure structured logging at startup
-configure_logging(level="INFO")
+configure_logging(
+    level="INFO",
+    service="my-service",
+    version="1.0.0",
+    environment="prod",
+)
 
 app = Quart(__name__)
 
 # Add observability middleware (single line!)
 app = create_middleware(
     app,
-    config=ObservabilityConfig(service_name="my-service")
+    config=ObservabilityConfig(
+        service_name="my-service",
+        log_request_body=True,   # set explicitly; implicit default is deprecated
+        log_response_body=True,
+    ),
 )
 
 logger = get_logger(__name__)
@@ -165,24 +187,162 @@ async def get_user(user_id: str):
 
 ### Propagating to Downstream Services
 
+`outbound_headers()` builds the headers for you, generating an ID if none is
+bound yet so an outbound call is never made without one:
+
 ```python
 import httpx
-from auditry import get_correlation_id
+from auditry import outbound_headers
 
 @app.get("/proxy")
 async def proxy_request():
-    # Get the current correlation ID
-    correlation_id = get_correlation_id()
-
-    # Pass it to downstream services
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://downstream-service.com/api/data",
-            headers={"X-Request-ID": correlation_id}  # Use your org's header name
+            headers=outbound_headers(),          # {"X-Request-ID": "<id>"}
         )
 
     return response.json()
 ```
+
+Pass `extra=` to merge with headers you were already sending, and `header_name=`
+if your organization uses a different header. Attach these to third-party API
+calls too, wherever the SDK accepts custom headers — it makes the vendor's
+audit trail line up with yours.
+
+## Correlation Propagation Beyond HTTP
+
+The middleware binds the correlation ID for HTTP requests. Everything outside
+that request cycle — queue workers, schedulers, cron jobs, scripts — has to bind
+one itself, **before the first log line**, or those logs correlate with nothing.
+
+### Workers and Background Jobs
+
+```python
+from auditry import configure_logging, get_logger, with_correlation
+
+configure_logging(service="my-worker", environment="prod")  # workers too, not just the API
+logger = get_logger(__name__)
+
+@with_correlation
+async def process_job(ctx, job_spec, correlation_id=None):
+    # The ID is bound before this body runs, so every line below carries it.
+    logger.info("job started", job_type=job_spec["type"])
+```
+
+The decorator takes the ID from a `correlation_id` keyword argument when the
+producer passes one, and generates a fresh UUID4 otherwise. It leaves the kwarg
+in place if your function accepts it and strips it if not, so you can decorate
+functions that never declared it.
+
+For manual control, use `bind_correlation_id(value)` (propagate an inbound ID —
+never regenerate mid-chain) or `ensure_correlation_id()` (return the current ID,
+binding a fresh one if unset).
+
+### Queue Hops (SQS / SNS)
+
+```python
+from auditry import bind_from_sqs_message, sqs_message_attributes
+
+# Producer
+sqs.send_message(
+    QueueUrl=queue_url,
+    MessageBody=json.dumps(job),
+    MessageAttributes=sqs_message_attributes(),
+)
+
+# Consumer — call this BEFORE the first log line
+for message in response["Messages"]:
+    bind_from_sqs_message(message)
+    logger.info("processing message")
+```
+
+`bind_from_sqs_message` falls back to a fresh ID when the attribute is absent,
+so a consumer never logs without one.
+
+Correlation IDs are always random UUID4s — opaque, never derived from user data.
+
+## Metrics (CloudWatch EMF)
+
+`MetricsLogger` emits CloudWatch [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format.html):
+a metric is a structured JSON log line that CloudWatch extracts at ingestion.
+That means **no AWS SDK dependency, no network call on the request path, and no
+credentials to manage** — metrics ride the log driver you already have.
+
+```python
+from auditry import MetricsLogger
+
+metrics = MetricsLogger(namespace="MyOrg/MyService", service="my-service")
+
+metrics.count("JobsSubmitted")                       # +1
+metrics.count("JobsSubmitted", 5)                    # +5
+metrics.timing("RenderLatency", 42.7)                # milliseconds
+metrics.zero("RateLimited")                          # see below
+```
+
+### Timing Dependency Calls
+
+`dependency_call()` times a call and records success or failure, with the
+exception class as an `ErrorType` dimension:
+
+```python
+with metrics.dependency_call("dynamodb", resource="jobs-table"):
+    table.get_item(Key={"id": job_id})
+```
+
+That emits `Latency` (ms), `Success`, and `Error` under a `Dependency`
+(plus optional `Resource`) dimension. A success emits `Error: 0` and a failure
+emits `Success: 0`, so neither series ever goes silent. The exception
+propagates unchanged — this measures, it doesn't swallow.
+
+### Why `zero()` Exists
+
+Monitoring systems forget metrics that stop reporting. If you only emit
+`RateLimited` when rate limiting happens, then "no data" and "no problem" look
+identical, and an alarm on that metric can never fire reliably. Emitting an
+explicit zero on the healthy path keeps the series alive so "no data" alarms
+work.
+
+### Dimensions Are Guarded
+
+Dimension names are validated against a forbidden-pattern list (`userid`,
+`email`, `filename`, `prompt`, `message`, and similar), and a match raises
+`ForbiddenDimensionError` **instead of emitting**:
+
+```python
+metrics.count("Uploads", dimensions={"user_email": email})   # ForbiddenDimensionError
+metrics.count("Uploads", dimensions={"FileType": "pdf"})     # fine
+```
+
+This is deliberately louder than the equivalent mistake in a log line. Metrics
+stores are unencrypted, broadly readable, and not selectively erasable — you
+cannot delete one user's data out of a metric after the fact. Failing at the
+call site is cheaper than discovering it in review, or not at all.
+
+There is also a soft cap of 8 dimensions per record, since every distinct
+dimension set is a separately billable metric.
+
+### Rollup Dimension Sets
+
+An error metric dimensioned by error type is unalarmable on its own: an alarm on
+the coarse series finds no data, and you cannot enumerate every exception class
+a dependency might raise. So `dependency_call()` records each error under
+**both** `[Service, Dependency, ErrorType]` and `[Service, Dependency]` — one
+record, no double counting within a set. Alarm on the coarse series, then use
+the fine one to see which error type drove it.
+
+`emit()` exposes the same mechanism directly:
+
+```python
+metrics.emit(
+    {"Error": 1},
+    dimensions={"Dependency": "s3", "ErrorType": "ClientError"},
+    rollup_dimension_sets=[["Dependency"]],   # also record under [Service, Dependency]
+)
+```
+
+Rollup names must already be present on the record, or `emit()` raises
+`ValueError`.
 
 ## User Tracking
 
@@ -326,16 +486,22 @@ All logs are structured JSON, ready for log aggregators:
 
 ### Automatic Redaction
 
-Automatically redacts these sensitive field patterns in all logged requests/responses:
+Automatically redacts these sensitive field patterns in all logged request
+bodies, response bodies, headers, **and query parameters**:
 
-- `password`
-- `token`
-- `api_key` / `apikey`
-- `secret`
-- `authorization`
+- `password` / `passwd`
+- `token` / `jwt` / `bearer`
+- `api_key` / `apikey` / `x-api-key`
+- `access_key` / `private_key`
+- `secret` / `credential`
+- `authorization` / `proxy-authorization` / `x-auth`
+- `cookie` / `set-cookie`
+- `otp` / `one_time_password`
+- `signature`
+- `csrf` / `xsrf`
 - `ssn` / `social_security_number`
 - `credit_card` / `creditcard`
-- `x-api-key`
+- `x-amz-security-token`
 
 Add custom patterns via configuration:
 
@@ -363,6 +529,79 @@ config = ObservabilityConfig(
 ```
 
 When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead of the actual content, while still logging metadata like headers, status codes, and timing information.
+
+Both flags still default to `True`, but leaving them implicit now raises a
+`DeprecationWarning` — **the defaults will flip to `False` in a future release.**
+Bodies are user-supplied content, and field-name redaction cannot reliably scrub
+free text: a prompt, an uploaded document, or a generated completion has no
+field names to match on. Setting either flag explicitly (even to `True`) is
+treated as a deliberate choice and silences the warning.
+
+### Exception Details
+
+Error logs are the single most likely place for customer content to leak.
+Exception messages routinely interpolate exactly the input that caused the
+failure — a parse error quotes the document, a validation error quotes the field
+value, an SDK error quotes the payload. Redaction cannot help, because a
+traceback has no field names to match.
+
+So as of 0.4.0, a failed request logs the exception **class** and the
+correlation ID, and nothing else:
+
+```json
+{
+  "level": "ERROR",
+  "error_type": "ValueError",
+  "exception_type": "ValueError",
+  "correlation_id": "abc-123",
+  "message": "Request failed: POST /workflows"
+}
+```
+
+You debug by taking the correlation ID and searching your logs, rather than by
+reading the exception text off the error line.
+
+Three escape hatches, in increasing order of exposure:
+
+```python
+# 1. Route full tracebacks to a destination you control the access to.
+from auditry import set_trace_handler
+
+def route_to_secure_log(error_type, traceback_text, event_dict):
+    # e.g. a dedicated logger shipping to an encrypted, access-controlled
+    # log group. Never write back to stdout — that defeats the point.
+    secure_logger.error(
+        "%s correlation_id=%s\n%s",
+        error_type, event_dict.get("correlation_id"), traceback_text,
+    )
+
+set_trace_handler(route_to_secure_log)
+```
+
+`set_trace_handler` is the seam that lets traces go somewhere access-controlled
+without auditry needing to know anything about that destination — a
+restricted-access log group, an error tracker, whatever you use. Pass `None` to
+remove the handler.
+
+The handler receives the exception **class name** and a rendered traceback
+**string**, not an `exc_info` tuple — so it can write traces anywhere that
+accepts text, but it cannot re-raise or re-capture the original exception
+object. If the handler itself raises, auditry swallows it and marks the line
+`trace_handler_error: true` rather than letting your logging path break the
+request.
+
+```python
+# 2. Put exception messages back on the standard stream, per service.
+config = ObservabilityConfig(
+    service_name="my-service",
+    log_exception_messages=True,   # default False
+)
+```
+
+```python
+# 3. Local development only: inline full tracebacks (flattened to one line).
+#    AUDITRY_FULL_TRACEBACKS=true
+```
 
 ### Excluding Paths
 
@@ -417,6 +656,29 @@ async def stream_data():
 ```
 
 Note: Excluded paths still get correlation IDs but no logging.
+
+### Health Probes Are Excluded by Default
+
+As of 0.4.0, these paths are merged into `excluded_paths` automatically:
+
+```
+/health  /healthz  /livez  /live  /ready  /readyz  /api/health
+```
+
+A load balancer probing every task every 15–30 seconds dominates log volume in
+most deployed services, and those lines carry no information. Probes still
+receive the correlation-ID header — they just stop producing request/response
+log lines. Opt out with:
+
+```python
+config = ObservabilityConfig(
+    service_name="my-service",
+    include_default_excluded_paths=False,
+)
+```
+
+Expect log-derived request counts to drop after upgrading, sometimes sharply.
+If you have an alarm on low log volume, check it before you roll this out.
 
 ## Best Practices
 
@@ -496,14 +758,98 @@ config = ObservabilityConfig(
 {
   "level": "ERROR",
   "service": "my-service-name",
+  "version": "1.4.2",
+  "environment": "prod",
   "correlation_id": "abc-123",
-  "message": "Request failed: POST /workflows - Error: ValueError: Invalid name",
+  "message": "Request failed: POST /workflows",
   "request": {...},
+  "error_type": "ValueError",
   "exception_type": "ValueError",
-  "exception_message": "Invalid name",
   "execution_duration_ms": 12.34
 }
 ```
+
+Note what is *not* there: no traceback, and no `exception_message`. See
+[Exception Details](#exception-details) for why, and for how to get them back
+when you need them.
+
+## Migration Guide: 0.3.x to 0.4.0
+
+Nothing breaks at import or construction time — no exports were removed, no
+signature changed incompatibly, and every new `ObservabilityConfig` field has a
+default. You can bump the version without touching code and the app will run.
+
+What changes is **what the logs look like**, so the breakage shows up in the
+tooling that reads them rather than in your service.
+
+### Breaking Changes
+
+1. **The message key is now `message`, not `event`.**
+
+   This is the one that actually bites. Any saved Logs Insights query,
+   CloudWatch metric filter, or dashboard referencing `event` stops matching —
+   and **metric-filter alarms fail silently**, because a filter that matches
+   nothing looks exactly like a healthy service. Audit your metric filters
+   before upgrading any service with alarms on log patterns.
+
+2. **Error logs no longer carry tracebacks or `exception_message`.**
+
+   They carry `error_type` and the correlation ID instead. `exception_type` is
+   unchanged, so dashboards keyed on it keep working. See
+   [Exception Details](#exception-details) to opt back in.
+
+3. **Health-probe requests are no longer logged.** Log-derived request counts
+   will drop. See [Health Probes Are Excluded by Default](#health-probes-are-excluded-by-default).
+
+4. **Query parameters are now redacted**, along with 14 additional field
+   patterns. Anything parsing a value out of a field named `signature` or
+   `credential` will now find `[REDACTED]`.
+
+5. **Timestamps are explicitly UTC** where they previously followed the
+   container's local time, and stdlib logging is explicitly bound to **stdout**
+   where `basicConfig` defaulted to stderr. Both are no-ops under the awslogs
+   driver; both matter if anything downstream separates the streams or parses
+   local timestamps.
+
+6. **A `DeprecationWarning` fires on construction** if `log_request_body` /
+   `log_response_body` are left implicit. A test suite running with `-W error`
+   or `filterwarnings = ["error"]` will fail until you set them explicitly.
+   That is the intended nudge, but it surfaces as a CI failure, not a log line.
+
+### Upgrade Steps
+
+1. Pass `service` / `version` / `environment` to `configure_logging()` — or set
+   `SERVICE_NAME` / `SERVICE_VERSION` / `ENVIRONMENT`. Do this in **worker
+   entrypoints too**, not just the API.
+
+   ```python
+   configure_logging(service="my-service", version="1.4.2", environment="prod")
+   ```
+
+2. Set `log_request_body` and `log_response_body` explicitly. Services handling
+   customer content should choose `False`.
+
+3. Update saved Logs Insights queries and metric filters: `event` → `message`.
+
+4. In workers, bind a correlation ID before the first log line, and add
+   `outbound_headers()` to outbound calls. See
+   [Correlation Propagation Beyond HTTP](#correlation-propagation-beyond-http).
+
+5. Decide how you want tracebacks handled: register `set_trace_handler(...)` to
+   route them to a gated destination, or accept `error_type` only.
+
+### New Features
+
+- **`auditry.metrics.MetricsLogger`** — dependency-free CloudWatch EMF emitter
+  with dependency-call timing, per-error-reason counts, zero-count support for
+  no-data alarms, and validation that rejects user content in dimensions.
+  See [Metrics (CloudWatch EMF)](#metrics-cloudwatch-emf).
+- **`auditry.propagation`** — correlation IDs across workers, outbound HTTP, and
+  SQS/SNS hops.
+- **`set_trace_handler(...)`** — route full tracebacks to a destination you
+  control access to.
+- **Root log schema** — `service` / `version` / `environment` on every line, and
+  the correlation ID attached to *every* line rather than only middleware ones.
 
 ## Migration Guide: 0.2.x to 0.3.0
 
