@@ -4,6 +4,7 @@ HTTP, and SQS/SNS boundaries."""
 import asyncio
 import uuid
 
+import pytest
 from asgi_correlation_id import correlation_id
 
 from auditry.propagation import (
@@ -16,8 +17,15 @@ from auditry.propagation import (
 )
 
 
-def setup_function(_):
-    correlation_id.set(None)
+@pytest.fixture(autouse=True)
+def _clean_correlation_context():
+    """Isolate every test's correlation context — start unbound, and restore
+    the ambient value afterward so nothing this module binds (e.g. "outer")
+    leaks into later tests. An autouse fixture rather than setup_function,
+    because setup_function never runs for the class-based tests below."""
+    token = correlation_id.set(None)
+    yield
+    correlation_id.reset(token)
 
 
 class TestBinding:
@@ -140,7 +148,6 @@ class TestDecoratorScoping:
         def task(data, correlation_id=None):
             raise RuntimeError("boom")
 
-        import pytest
         with pytest.raises(RuntimeError):
             task("x", correlation_id="inner")
         assert correlation_id.get() == "outer"
