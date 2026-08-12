@@ -116,3 +116,53 @@ class TestDecorator:
             return correlation_id.get()
 
         assert uuid.UUID(task("x")).version == 4
+
+
+class TestDecoratorScoping:
+    """The binding is task-scoped: the surrounding context is restored when
+    the task returns or raises, so a long-lived worker never logs a finished
+    task's ID against later work."""
+
+    def test_context_restored_after_return(self):
+        bind_correlation_id("outer")
+
+        @with_correlation
+        def task(data, correlation_id=None):
+            return correlation_id
+
+        assert task("x", correlation_id="inner") == "inner"
+        assert correlation_id.get() == "outer"
+
+    def test_context_restored_after_raise(self):
+        bind_correlation_id("outer")
+
+        @with_correlation
+        def task(data, correlation_id=None):
+            raise RuntimeError("boom")
+
+        import pytest
+        with pytest.raises(RuntimeError):
+            task("x", correlation_id="inner")
+        assert correlation_id.get() == "outer"
+
+    def test_async_context_restored(self):
+        bind_correlation_id("outer")
+
+        @with_correlation
+        async def task(data, correlation_id=None):
+            return correlation_id.upper()
+
+        assert asyncio.run(task("x", correlation_id="inner")) == "INNER"
+        assert correlation_id.get() == "outer"
+
+    def test_var_keyword_functions_keep_the_kwarg(self):
+        """A function that only takes **kwargs still receives correlation_id."""
+        seen = {}
+
+        @with_correlation
+        def task(data, **kwargs):
+            seen.update(kwargs)
+            return correlation_id.get()
+
+        assert task("x", correlation_id="kw-1") == "kw-1"
+        assert seen["correlation_id"] == "kw-1"

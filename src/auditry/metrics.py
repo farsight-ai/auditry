@@ -67,6 +67,12 @@ FORBIDDEN_DIMENSION_PATTERNS = (
 
 _MAX_DIMENSIONS = 8  # CloudWatch EMF hard limit is 30; keep cardinality sane.
 
+# Dimension VALUES must be short, single-line identifiers. Pattern-matching
+# values the way we match keys would misfire constantly ("email-service" is a
+# perfectly good Dependency value), so the value guard is structural: user
+# content is free-form and long; identifiers are short and single-line.
+_MAX_DIMENSION_VALUE_LEN = 128
+
 
 class ForbiddenDimensionError(ValueError):
     """Raised when a metric dimension would carry PII or user content."""
@@ -77,7 +83,7 @@ def _normalize(name: str) -> str:
 
 
 def _validate_dimensions(dimensions: Dict[str, str]) -> None:
-    for key in dimensions:
+    for key, value in dimensions.items():
         norm = _normalize(key)
         for pattern in FORBIDDEN_DIMENSION_PATTERNS:
             if pattern in norm:
@@ -87,6 +93,23 @@ def _validate_dimensions(dimensions: Dict[str, str]) -> None:
                     "user content (they are unencrypted, widely readable, and "
                     "unerasable). Aggregate by an opaque tenant/org ID instead."
                 )
+        # Structural guard on the value side: bounded, single-line strings
+        # only. This catches free-form content (a prompt, a document, an
+        # error message) being passed where an identifier belongs.
+        if not isinstance(value, str) or not value:
+            raise ForbiddenDimensionError(
+                f"Metric dimension '{key}' must be a non-empty string, "
+                f"got {type(value).__name__} — dimension values are "
+                "identifiers, not data."
+            )
+        if len(value) > _MAX_DIMENSION_VALUE_LEN or "\n" in value:
+            raise ForbiddenDimensionError(
+                f"Metric dimension '{key}' value is "
+                f"{'multi-line' if chr(10) in value else 'too long'} "
+                f"(max {_MAX_DIMENSION_VALUE_LEN} chars, single-line) — "
+                "long or multi-line values indicate user content in a "
+                "dimension. Use a short, bounded identifier."
+            )
     if len(dimensions) > _MAX_DIMENSIONS:
         raise ValueError(
             f"{len(dimensions)} dimensions exceeds the sane-cardinality cap "
@@ -147,8 +170,25 @@ class MetricsLogger:
         """
         dims = dict(self.default_dimensions)
         if dimensions:
-            _validate_dimensions(dimensions)
             dims.update(dimensions)
+        # Validate the MERGED set — defaults plus call-specific — so the
+        # cardinality cap can't be sidestepped by splitting dimensions
+        # across the constructor and the call.
+        _validate_dimensions(dims)
+
+        # The EMF record is flat: _aws metadata, dimension values, and metric
+        # values share one JSON object. Reject names that would collide —
+        # a dimension named "_aws" would destroy the metadata; a metric
+        # sharing a dimension's name would silently overwrite its value.
+        reserved = {"_aws"} & (set(dims) | set(metrics))
+        colliding = set(dims) & set(metrics)
+        if reserved or colliding:
+            raise ValueError(
+                f"metric/dimension names collide in the flattened EMF record "
+                f"(reserved: {sorted(reserved)}, overlapping: {sorted(colliding)}) — "
+                "metric and dimension names must be distinct and must not use "
+                "reserved EMF fields."
+            )
 
         dimension_sets: List[List[str]] = [list(dims.keys())] if dims else [[]]
         for rollup in rollup_dimension_sets or []:

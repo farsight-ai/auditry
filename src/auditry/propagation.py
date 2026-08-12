@@ -124,31 +124,45 @@ def with_correlation(func: F) -> F:
     fresh random ID is bound. The kwarg is left in place if the wrapped
     function accepts it, and stripped otherwise.
 
+    The binding is scoped to the task: the previous correlation context is
+    restored when the task returns or raises, so a long-lived worker never
+    logs a completed task's ID against later, unrelated work.
+
     ```python
     @with_correlation
     async def process_job(ctx, job_spec, correlation_id=None): ...
     ```
     """
-    accepts_kwarg = "correlation_id" in inspect.signature(func).parameters
+    params = inspect.signature(func).parameters
+    accepts_kwarg = "correlation_id" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
-    def _bind(kwargs: Dict[str, Any]) -> None:
-        cid = kwargs.get("correlation_id")
-        bind_correlation_id(cid)
+    def _bind(kwargs: Dict[str, Any]) -> Any:
+        cid = kwargs.get("correlation_id") or str(uuid.uuid4())
+        token = correlation_id.set(cid)
         if not accepts_kwarg:
             kwargs.pop("correlation_id", None)
+        return token
 
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            _bind(kwargs)
-            return await func(*args, **kwargs)
+            token = _bind(kwargs)
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                correlation_id.reset(token)
 
         return async_wrapper  # type: ignore[return-value]
 
     @functools.wraps(func)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-        _bind(kwargs)
-        return func(*args, **kwargs)
+        token = _bind(kwargs)
+        try:
+            return func(*args, **kwargs)
+        finally:
+            correlation_id.reset(token)
 
     return sync_wrapper  # type: ignore[return-value]

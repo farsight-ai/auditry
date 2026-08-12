@@ -95,7 +95,7 @@ async def test_streaming_response_with_middleware(app, caplog):
     # Logs are printed to stdout by auditry's logger
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_regular_response_with_middleware(app, caplog):
     # Logs are printed to stdout by auditry's logger
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_streaming_without_middleware(app_without_middleware):
     assert "data: chunk 2" in full_content
 
     # No correlation header without middleware
-    assert "X-Correlation-Id" not in response.headers
+    assert "X-Request-ID" not in response.headers
 
 
 @pytest.mark.asyncio
@@ -159,7 +159,7 @@ async def test_large_response_with_middleware(app):
     assert data["data"][999] == 999
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 @pytest.mark.asyncio
@@ -229,3 +229,39 @@ async def test_mixed_requests(app):
     assert large_response.status_code == 200
     data = await large_response.get_json()
     assert len(data["data"]) == 1000
+
+@pytest.mark.asyncio
+async def test_request_id_header_appears_exactly_once():
+    """CorrelationIdMiddleware owns the response header; the observability
+    hooks must not add a second copy (regular, streaming, and excluded
+    paths alike)."""
+    app = Quart(__name__)
+    config = ObservabilityConfig(
+        service_name="dedupe-svc",
+        log_request_body=False,
+        log_response_body=False,
+        excluded_paths=["/excluded"],
+    )
+
+    @app.route("/regular")
+    async def regular():
+        return {"ok": True}
+
+    @app.route("/excluded")
+    async def excluded():
+        return {"ok": True}
+
+    @app.route("/stream")
+    async def stream():
+        @stream_with_context
+        async def generate():
+            yield b"data: x\n\n"
+        return Response(generate(), 200, mimetype="text/event-stream")
+
+    app = create_middleware(app, config)
+    client = app.test_client()
+
+    for path in ("/regular", "/excluded", "/stream"):
+        response = await client.get(path)
+        values = response.headers.getlist("X-Request-ID")
+        assert len(values) == 1, f"{path}: expected exactly one X-Request-ID, got {values}"

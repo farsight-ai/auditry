@@ -131,3 +131,44 @@ def test_emit_rejects_rollup_dimensions_not_in_record():
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
     with pytest.raises(ValueError):
         m.emit({"X": 1}, dimensions={"A": "a"}, rollup_dimension_sets=[["Nope"]])
+
+
+def test_emit_validates_merged_dimension_set():
+    """Defaults + call-specific dimensions are validated together — the
+    cardinality cap can't be sidestepped by splitting them."""
+    import io, pytest
+    m = MetricsLogger(
+        namespace="Test/NS",
+        service="svc",
+        default_dimensions={f"D{i}": "x" for i in range(7)},  # 8 with Service
+        sink=io.StringIO(),
+    )
+    with pytest.raises(ValueError, match="9 dimensions"):
+        m.count("C", 1, dimensions={"Extra": "x"})
+
+
+def test_emit_rejects_reserved_and_colliding_names():
+    """The EMF record is flat — dimension/metric names must not collide with
+    each other or with the reserved _aws metadata key."""
+    import io, pytest
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
+    with pytest.raises(ValueError, match="collide"):
+        m.emit({"_aws": 1})
+    with pytest.raises(ValueError, match="collide"):
+        m.emit({"Service": 1})  # metric name overwrites the Service dimension
+    with pytest.raises(ValueError, match="collide"):
+        m.emit({"X": 1}, dimensions={"_aws": "v"})
+
+
+def test_dimension_values_must_be_bounded_identifiers():
+    """Value-side guard: non-string, empty, over-long, or multi-line values
+    indicate user content in a dimension and are rejected. Pattern-matching
+    values would misfire ('email-service' is a fine Dependency), so the
+    guard is structural."""
+    import io, pytest
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
+    for bad in [123, "", "a" * 129, "line1\nline2"]:
+        with pytest.raises(ForbiddenDimensionError):
+            m.emit({"X": 1}, dimensions={"Dependency": bad})
+    # Legitimate identifiers that merely CONTAIN a forbidden word pass.
+    m.emit({"X": 1}, dimensions={"Dependency": "email-service"})

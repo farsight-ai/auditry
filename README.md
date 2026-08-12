@@ -53,9 +53,12 @@ app = create_middleware(
     config=ObservabilityConfig(
         service_name="my-service",
         # Set these explicitly — the implicit default is deprecated and will
-        # flip to False. Choose False if you handle customer content.
-        log_request_body=True,
-        log_response_body=True,
+        # flip to False. False is the safe choice: request/response bodies
+        # are user-supplied content that field-name redaction cannot
+        # reliably scrub. Opt in deliberately, per service, only when you
+        # know the bodies are safe to persist.
+        log_request_body=False,
+        log_response_body=False,
     ),
 )
 
@@ -89,8 +92,8 @@ app = create_middleware(
     app,
     config=ObservabilityConfig(
         service_name="my-service",
-        log_request_body=True,   # set explicitly; implicit default is deprecated
-        log_response_body=True,
+        log_request_body=False,   # set explicitly; False is the safe choice
+        log_response_body=False,
     ),
 )
 
@@ -140,13 +143,14 @@ config = ObservabilityConfig(
     # Whether to log query parameters (default: True)
     log_query_params=True,
 
-    # Whether to log request bodies for all endpoints (default: True)
-    # Set to False for applications handling sensitive data
-    log_request_body=True,
+    # Whether to log request bodies (default today: True, deprecated — will
+    # flip to False). Bodies are user-supplied content that field-name
+    # redaction cannot reliably scrub; set False unless you know the bodies
+    # on every endpoint are safe to persist.
+    log_request_body=False,
 
-    # Whether to log response bodies for all endpoints (default: True)
-    # Set to False for applications returning sensitive data
-    log_response_body=True,
+    # Whether to log response bodies (same caveat as request bodies)
+    log_response_body=False,
 )
 
 # For FastAPI:
@@ -166,6 +170,14 @@ Request IDs are automatically handled:
 - **Generated if missing**: Creates a new UUID if no request ID provided
 - **Added to response**: Returns the request ID in the response header
 - **Included in logs**: Automatically included in all structured logs
+
+One nuance: `correlation_id` is an **optional** field of the root schema. It is
+present whenever a context is bound — every line inside a request, and every
+line inside a worker task that binds one — and absent on lines logged outside
+any context (import time, startup hooks). Consumers should treat the field as
+optional rather than assuming it on every line; auditry deliberately does not
+invent a per-line fallback ID, because each line would get a *different* ID,
+which falsely implies correlation.
 
 ### Using Correlation IDs in Your Code
 
@@ -221,7 +233,8 @@ one itself, **before the first log line**, or those logs correlate with nothing.
 ```python
 from auditry import configure_logging, get_logger, with_correlation
 
-configure_logging(service="my-worker", environment="prod")  # workers too, not just the API
+# Workers too, not just the API. version falls back to SERVICE_VERSION if unset.
+configure_logging(service="my-worker", version="1.4.2", environment="prod")
 logger = get_logger(__name__)
 
 @with_correlation
@@ -260,7 +273,11 @@ for message in response["Messages"]:
 `bind_from_sqs_message` falls back to a fresh ID when the attribute is absent,
 so a consumer never logs without one.
 
-Correlation IDs are always random UUID4s — opaque, never derived from user data.
+IDs that auditry *generates* are always random UUID4s — opaque, never derived
+from user data. Inbound IDs are propagated verbatim (that is the point of
+propagation), so the randomness guarantee holds end-to-end only when the
+edge service generated the ID. Don't accept correlation IDs from untrusted
+callers into systems that assume opacity.
 
 ## Metrics (CloudWatch EMF)
 
@@ -565,11 +582,18 @@ Three escape hatches, in increasing order of exposure:
 
 ```python
 # 1. Route full tracebacks to a destination you control the access to.
+import logging
+
 from auditry import set_trace_handler
 
+# A dedicated logger with its OWN handler, shipping to an encrypted,
+# access-controlled destination. propagate=False keeps it off the root
+# handler — never write traces back to stdout; that defeats the point.
+secure_logger = logging.getLogger("app.secure-traces")
+secure_logger.propagate = False
+secure_logger.addHandler(logging.FileHandler("/var/log/secure/traces.log"))
+
 def route_to_secure_log(error_type, traceback_text, event_dict):
-    # e.g. a dedicated logger shipping to an encrypted, access-controlled
-    # log group. Never write back to stdout — that defeats the point.
     secure_logger.error(
         "%s correlation_id=%s\n%s",
         error_type, event_dict.get("correlation_id"), traceback_text,
@@ -661,7 +685,7 @@ Note: Excluded paths still get correlation IDs but no logging.
 
 As of 0.4.0, these paths are merged into `excluded_paths` automatically:
 
-```
+```text
 /health  /healthz  /livez  /live  /ready  /readyz  /api/health
 ```
 
@@ -698,31 +722,44 @@ app = FastAPI()
 
 ### 2. Use Structured Logging
 
-Always use `get_logger(__name__)` instead of standard Python logging:
+Prefer `get_logger(__name__)` over standard Python logging:
 
 ```python
 from auditry import get_logger
 
 logger = get_logger(__name__)
 
-# Good - structured with correlation ID
+# Good - structured key/value fields, queryable individually
 logger.info("Processing payment", amount=100.50, currency="USD")
 
-# Bad - loses structured data
+# Works, but flat - the line still carries the JSON root schema
+# (timestamp, service, correlation ID), but the data is baked into
+# the message string instead of being queryable fields
 import logging
-logging.info("Processing payment")
+logging.info("Processing payment amount=%s", 100.50)
 ```
+
+Plain-stdlib records — including those from libraries you don't control
+(uvicorn, boto3) — are rendered through the same processor chain, so every
+line on stdout is schema-carrying JSON either way. `get_logger` is about
+making *your* fields structured and queryable.
 
 ### 3. Propagate Correlation IDs
 
-When calling downstream services, always pass the correlation ID:
+When calling downstream services, always pass the correlation ID —
+`outbound_headers()` builds the headers and guarantees an ID is present
+(binding a fresh one if none exists yet), so don't assemble them by hand:
 
 ```python
-from auditry import get_correlation_id
+from auditry import outbound_headers
 
-correlation_id = get_correlation_id()
-headers = {"X-Request-ID": correlation_id}  # Use your org's header name
-response = await client.get(url, headers=headers)
+response = await client.get(url, headers=outbound_headers())
+
+# If your org uses a different header name, or you have headers already:
+response = await client.get(
+    url,
+    headers=outbound_headers(header_name="X-Trace-ID", extra={"Accept": "application/json"}),
+)
 ```
 
 ### 4. Customize for Your Organization
@@ -777,7 +814,11 @@ when you need them.
 
 Nothing breaks at import or construction time — no exports were removed, no
 signature changed incompatibly, and every new `ObservabilityConfig` field has a
-default. You can bump the version without touching code and the app will run.
+default. You can bump the version without touching code and the app will run —
+with one caveat: a test suite that promotes `DeprecationWarning` to an error
+(`-W error`, `filterwarnings = ["error"]`) will fail on `ObservabilityConfig`
+construction until `log_request_body` / `log_response_body` are set explicitly
+(breaking-change item 6 below).
 
 What changes is **what the logs look like**, so the breakage shows up in the
 tooling that reads them rather than in your service.

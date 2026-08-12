@@ -32,18 +32,12 @@ class FastAPIMiddleware:
         path = str(request.url.path)
         method = request.method
 
-        # Handle excluded paths - just add correlation ID
+        # Handle excluded paths - no logging. The response still carries the
+        # correlation-ID header: CorrelationIdMiddleware (the outer layer
+        # added by create_middleware) appends it to every response, so this
+        # middleware must not add it too — that produced a duplicate header.
         if should_exclude_path(path, method, self.config.excluded_paths):
-            async def add_correlation_header(message):
-                if message["type"] == "http.response.start":
-                    corr_id = get_correlation_id()
-                    if corr_id and self.config.correlation_id_header:
-                        headers = list(message.get("headers", []))
-                        headers.append((self.config.correlation_id_header.encode(), corr_id.encode()))
-                        message["headers"] = headers
-                await send(message)
-
-            await self.app(scope, receive, add_correlation_header)
+            await self.app(scope, receive, send)
             return
 
         # Buffer the request body for logging
@@ -114,11 +108,9 @@ class FastAPIMiddleware:
                 if "text/event-stream" in content_type:
                     is_streaming = True
 
-                # Add correlation ID to response
-                if correlation_id and self.config.correlation_id_header:
-                    headers = list(message.get("headers", []))
-                    headers.append((self.config.correlation_id_header.encode(), correlation_id.encode()))
-                    message["headers"] = headers
+                # NOTE: the correlation-ID response header is added by
+                # CorrelationIdMiddleware (the outer layer), not here —
+                # adding it in both places produced a duplicate header.
 
             elif message["type"] == "http.response.body" and not is_streaming:
                 body = message.get("body", b"")

@@ -44,6 +44,13 @@ correlation propagation outside ASGI, and an EMF metrics helper.
   `private_key`, `csrf`, `x-amz-security-token`, …).
 - Stdlib logging is explicitly bound to stdout.
 
+### Fixed
+
+- The correlation-ID response header is no longer emitted twice. Both the
+  FastAPI and Quart middlewares were adding it manually on top of
+  `CorrelationIdMiddleware`, which already appends it to every response;
+  the manual additions are removed and asgi-correlation-id owns the header.
+
 ### Deprecated
 
 - Implicit `log_request_body`/`log_response_body` defaults: both currently

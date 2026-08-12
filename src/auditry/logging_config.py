@@ -92,7 +92,16 @@ def _add_service_context(
 def _add_correlation_id(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    """Every log line carries the correlation ID when one is bound."""
+    """Every log line carries the correlation ID when one is bound.
+
+    ``correlation_id`` is an *optional* field of the root schema: it is
+    present whenever a context is bound (ASGI middleware, or
+    ``auditry.propagation`` in workers) and absent otherwise — e.g. a log
+    line emitted at import time or from a startup hook. Consumers must not
+    assume the field exists on every line. A per-line random fallback would
+    be worse than absence: each line would carry a *different* ID, which
+    falsely implies correlation where there is none.
+    """
     if "correlation_id" not in event_dict:
         try:
             from asgi_correlation_id import correlation_id
@@ -189,24 +198,32 @@ def configure_logging(
     }
     _service_context.update({k: v for k, v in resolved.items() if v})
 
+    # One processor chain, applied to BOTH structlog-originated events and
+    # foreign stdlib records (uvicorn, boto3, any library calling
+    # logging.getLogger(...)), so every line on stdout carries the same
+    # JSON schema. Rendering happens exactly once, in the formatter.
+    shared_processors = [
+        # Add log level to event dict
+        structlog.stdlib.add_log_level,
+        # Add timestamp in ISO format (UTC)
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        # Merge structlog contextvars (correlation_id, user_id, ...)
+        structlog.contextvars.merge_contextvars,
+        # service / version / environment on every line
+        _add_service_context,
+        # correlation ID on every line (when a context is bound)
+        _add_correlation_id,
+        # error_type only; full traces go to the gated handler
+        _error_type_only,
+        # "message" is the schema key
+        _rename_event_to_message,
+    ]
+
     structlog.configure(
         processors=[
-            # Add log level to event dict
-            structlog.stdlib.add_log_level,
-            # Add timestamp in ISO format (UTC)
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            # Merge structlog contextvars (correlation_id, user_id, ...)
-            structlog.contextvars.merge_contextvars,
-            # service / version / environment on every line
-            _add_service_context,
-            # correlation ID on every line
-            _add_correlation_id,
-            # error_type only; full traces go to the gated handler
-            _error_type_only,
-            # "message" is the schema key
-            _rename_event_to_message,
-            # Render as single-line JSON
-            structlog.processors.JSONRenderer(),
+            *shared_processors,
+            # Hand the event dict to the stdlib formatter below for rendering
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         # Use standard library logging
         wrapper_class=structlog.stdlib.BoundLogger,
@@ -214,13 +231,26 @@ def configure_logging(
         cache_logger_on_first_use=True,
     )
 
-    # Configure standard library logging (stdout; container agents route it)
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=getattr(logging, level.upper()),
-        force=True,
+    # Foreign stdlib records run the same chain via foreign_pre_chain, so
+    # they get timestamps, service context, correlation IDs, and the
+    # error_type-only exception treatment — not just "%(message)s".
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # Render as single-line JSON
+            structlog.processors.JSONRenderer(),
+        ],
     )
+
+    # Configure standard library logging (stdout; container agents route it)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    for existing in root_logger.handlers[:]:
+        root_logger.removeHandler(existing)
+    root_logger.addHandler(handler)
+    root_logger.setLevel(getattr(logging, level.upper()))
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

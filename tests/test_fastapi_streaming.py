@@ -94,7 +94,7 @@ def test_streaming_response_with_middleware(client, caplog):
     # Logs are printed to stdout by auditry's logger
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_regular_response_with_middleware(client, caplog):
@@ -110,7 +110,7 @@ def test_regular_response_with_middleware(client, caplog):
     # Logs are printed to stdout by auditry's logger
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_streaming_without_middleware(client_without_middleware):
@@ -127,7 +127,7 @@ def test_streaming_without_middleware(client_without_middleware):
     assert "data: chunk 2" in content
 
     # No correlation header without middleware
-    assert "X-Correlation-Id" not in response.headers
+    assert "X-Request-ID" not in response.headers
 
 
 def test_large_response_with_middleware(client):
@@ -143,7 +143,7 @@ def test_large_response_with_middleware(client):
     assert data["data"][999] == 999
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_sync_streaming_response_with_middleware(client):
@@ -160,7 +160,7 @@ def test_sync_streaming_response_with_middleware(client):
     assert "data: sync chunk 2" in content
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_multiple_requests_sequential(client):
@@ -220,7 +220,7 @@ def test_streaming_with_different_media_types(app):
         assert data["chunk"] == i
 
     # Verify correlation header is set
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_error_in_streaming_response(app):
@@ -280,3 +280,40 @@ def test_non_excluded_streaming_does_not_wedge_event_loop():
 
     assert response.status_code == 200
     assert response.text == "chunk 0\nchunk 1\nchunk 2\nchunk 3\nchunk 4\n"
+
+
+def test_request_id_header_appears_exactly_once():
+    """CorrelationIdMiddleware owns the response header; the observability
+    middleware must not add a second copy (regular, streaming, and excluded
+    paths alike)."""
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    config = ObservabilityConfig(
+        service_name="dedupe-svc",
+        log_request_body=False,
+        log_response_body=False,
+        excluded_paths=["/excluded"],
+    )
+
+    @app.get("/regular")
+    async def regular():
+        return {"ok": True}
+
+    @app.get("/excluded")
+    async def excluded():
+        return {"ok": True}
+
+    @app.get("/stream")
+    async def stream():
+        async def gen():
+            yield b"data: x\n\n"
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    app = create_middleware(app, config)
+    client = TestClient(app)
+
+    for path in ("/regular", "/excluded", "/stream"):
+        response = client.get(path)
+        values = response.headers.get_list("x-request-id")
+        assert len(values) == 1, f"{path}: expected exactly one x-request-id, got {values}"

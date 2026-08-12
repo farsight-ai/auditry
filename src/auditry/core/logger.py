@@ -206,11 +206,15 @@ class RequestResponseLogger:
             # Explicit opt-in only — see the note on the config field.
             log_entry["exception_message"] = str(error)
 
-        # Log the error
+        # Log the error. exc_info is the explicit tuple for the *supplied*
+        # exception, not exc_info=True: log_error may be called after the
+        # caller's except block has ended (or for a different exception than
+        # the currently-active one), and sys.exc_info() would then be empty
+        # or wrong.
         self.logger.error(
             f"Request failed: {request_data['method']} {request_data['path']} - "
             f"Error: {type(error).__name__} - Duration: {duration_ms:.2f}ms",
-            exc_info=True,
+            exc_info=(type(error), error, error.__traceback__),
             **log_entry
         )
 

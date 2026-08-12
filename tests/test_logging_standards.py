@@ -198,3 +198,34 @@ class TestQueryParamRedaction:
         )
         assert prepared["query_params"]["token"] == "[REDACTED]"
         assert prepared["query_params"]["page"] == "2"
+
+
+class TestForeignStdlibRecords:
+    """Records from plain stdlib loggers (uvicorn, boto3, any library) carry
+    the same JSON root schema as structlog-originated lines — one stream,
+    one schema."""
+
+    def test_foreign_record_carries_schema(self, capsys):
+        configure_logging(service="test-svc", version="1.2.3", environment="test")
+        correlation_id.set("cid-foreign")
+        logging.getLogger("some.library").info("plain %s", "message")
+        rec = last_line(capsys)
+        assert rec["message"] == "plain message"
+        assert rec["service"] == "test-svc"
+        assert rec["version"] == "1.2.3"
+        assert rec["environment"] == "test"
+        assert rec["correlation_id"] == "cid-foreign"
+        assert rec["level"] == "info"
+        assert "timestamp" in rec
+
+    def test_foreign_exception_scrubbed_to_error_type(self, capsys):
+        configure_logging(service="test-svc")
+        try:
+            raise ValueError("customer secret in foreign log")
+        except ValueError:
+            logging.getLogger("some.library").error("it failed", exc_info=True)
+        rec = last_line(capsys)
+        assert rec["error_type"] == "ValueError"
+        raw = json.dumps(rec)
+        assert "customer secret" not in raw
+        assert "Traceback" not in raw
