@@ -126,6 +126,61 @@ def test_dependency_call_error_rolls_up_to_dependency_set():
     assert record["ErrorType"] == "RuntimeError"
 
 
+def test_dependency_call_resource_error_still_rolls_up_to_dependency_set():
+    """With resource=, the coarse rollup must stay [Service, Dependency] —
+    a Resource in the rollup would leave the documented per-dependency alarm
+    series with no data."""
+    import io, json
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    try:
+        with m.dependency_call("dynamodb", resource="jobs-table"):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == sorted(
+        map(
+            sorted,
+            [
+                ["Service", "Dependency", "Resource", "ErrorType"],
+                ["Service", "Dependency"],
+            ],
+        )
+    )
+
+
+def test_dependency_call_resource_success_rolls_up_error_zero():
+    """Success with resource= also records on the coarse set, so Error: 0
+    keeps the per-dependency alarm series alive between failures."""
+    import io, json
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    with m.dependency_call("dynamodb", resource="jobs-table"):
+        pass
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == sorted(
+        map(sorted, [["Service", "Dependency", "Resource"], ["Service", "Dependency"]])
+    )
+    assert record["Success"] == 1
+    assert record["Error"] == 0
+
+
+def test_dependency_call_success_without_resource_has_single_set():
+    """No resource, no rollup: dims already ARE the coarse set, and a
+    duplicate dimension set would double-count within the record."""
+    import io, json
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    with m.dependency_call("db"):
+        pass
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == [["Dependency", "Service"]]
+
+
 def test_emit_rejects_rollup_dimensions_not_in_record():
     import io, pytest
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())

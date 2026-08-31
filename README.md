@@ -336,7 +336,7 @@ stores are unencrypted, broadly readable, and not selectively erasable — you
 cannot delete one user's data out of a metric after the fact. Failing at the
 call site is cheaper than discovering it in review, or not at all.
 
-There is also a soft cap of 8 dimensions per record, since every distinct
+There is also a hard cap of 8 dimensions per record (`ValueError`), since every distinct
 dimension set is a separately billable metric.
 
 ### Rollup Dimension Sets
@@ -347,6 +347,11 @@ a dependency might raise. So `dependency_call()` records each error under
 **both** `[Service, Dependency, ErrorType]` and `[Service, Dependency]` — one
 record, no double counting within a set. Alarm on the coarse series, then use
 the fine one to see which error type drove it.
+
+When `resource=` is passed, the fine set gains a `Resource` dimension but the
+rollup stays `[Service, Dependency]`, and successes roll up there too — so the
+per-dependency alarm series always has data (`Error: 0` between failures), no
+matter how the calls are scoped.
 
 `emit()` exposes the same mechanism directly:
 

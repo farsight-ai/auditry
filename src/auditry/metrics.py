@@ -262,6 +262,14 @@ class MetricsLogger:
         dims: Dict[str, str] = {"Dependency": dependency}
         if resource:
             dims["Resource"] = resource
+        # The coarse per-dependency set — no Resource, no ErrorType — that
+        # alarms and availability math target without enumerating either.
+        # Both outcomes must record here: errors so the alarm sees them,
+        # successes so Error: 0 keeps the series alive between failures.
+        dependency_set = [
+            k for k in {**self.default_dimensions, "Dependency": dependency}
+        ]
+        rollups = [dependency_set] if resource else None
         start = time.perf_counter()
         try:
             yield
@@ -273,12 +281,9 @@ class MetricsLogger:
                 units={"Latency": "Milliseconds"},
                 unit="Count",
                 dimensions=full_dims,
-                # Also record under the set WITHOUT ErrorType, so alarms and
-                # availability math can target the per-dependency series
-                # without enumerating error types.
-                rollup_dimension_sets=[
-                    [k for k in {**self.default_dimensions, **dims}]
-                ],
+                # The error path always rolls up: its full set carries
+                # ErrorType (and Resource, when given), never the coarse set.
+                rollup_dimension_sets=[dependency_set],
             )
             raise
         else:
@@ -288,4 +293,7 @@ class MetricsLogger:
                 units={"Latency": "Milliseconds"},
                 unit="Count",
                 dimensions=dims,
+                # Without a resource, dims IS the coarse set — a rollup
+                # would duplicate it and double-count within the record.
+                rollup_dimension_sets=rollups,
             )

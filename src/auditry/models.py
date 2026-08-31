@@ -159,6 +159,9 @@ class ObservabilityConfig(BaseModel):
                 merged += [p for p in DEFAULT_EXCLUDED_PATHS if p not in merged]
                 self.excluded_paths = merged
             elif isinstance(self.excluded_paths, dict):
-                get_paths = list(self.excluded_paths.get("GET", []))
-                get_paths += [p for p in DEFAULT_EXCLUDED_PATHS if p not in get_paths]
-                self.excluded_paths = {**self.excluded_paths, "GET": get_paths}
+                # Merge into the "*" (all-methods) key so dict-form configs get
+                # the same any-method exclusion as the list form — probes are
+                # not always GET (HEAD is common for ELB health checks).
+                star_paths = list(self.excluded_paths.get("*", []))
+                star_paths += [p for p in DEFAULT_EXCLUDED_PATHS if p not in star_paths]
+                self.excluded_paths = {**self.excluded_paths, "*": star_paths}

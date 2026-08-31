@@ -11,6 +11,7 @@ from asgi_correlation_id import correlation_id
 from auditry import ObservabilityConfig
 from auditry.logging_config import configure_logging, get_logger, set_trace_handler
 from auditry.models import DEFAULT_EXCLUDED_PATHS
+from auditry.path_matcher import should_exclude_path
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +99,7 @@ class TestErrorDiscipline:
         def handler(error_type, traceback_text, event_dict):
             received["error_type"] = error_type
             received["tb"] = traceback_text
+            received["event_dict"] = event_dict
 
         set_trace_handler(handler)
         logger, _ = configure_and_capture(capsys, service="s")
@@ -107,6 +109,9 @@ class TestErrorDiscipline:
             logger.error("failed", exc_info=True)
         assert received["error_type"] == "KeyError"
         assert "gated detail" in received["tb"]
+        # The snapshot follows the root schema: log text under "message".
+        assert received["event_dict"]["message"] == "failed"
+        assert "event" not in received["event_dict"]
         # ... and still nothing on the standard stream
         assert "gated detail" not in json.dumps(last_line(capsys))
 
@@ -161,6 +166,23 @@ class TestConfigDefaults:
         )
         assert "/metrics" in cfg.excluded_paths
         assert "/healthz" in cfg.excluded_paths
+
+    def test_default_health_paths_merge_into_wildcard_for_dict_form(self):
+        """Dict-form configs get the same any-method probe exclusion as the
+        list form: defaults merge into the "*" key, not GET — HEAD probes
+        (common for ELB health checks) must be excluded too."""
+        cfg = ObservabilityConfig(
+            service_name="svc",
+            log_request_body=False,
+            log_response_body=False,
+            excluded_paths={"POST": ["/api/stream"]},
+        )
+        assert cfg.excluded_paths["POST"] == ["/api/stream"]
+        for path in DEFAULT_EXCLUDED_PATHS:
+            assert path in cfg.excluded_paths["*"]
+        assert should_exclude_path("/healthz", "HEAD", cfg.excluded_paths)
+        assert should_exclude_path("/healthz", "GET", cfg.excluded_paths)
+        assert not should_exclude_path("/api/stream", "GET", cfg.excluded_paths)
 
     def test_default_health_paths_opt_out(self):
         cfg = ObservabilityConfig(

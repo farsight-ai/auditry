@@ -24,6 +24,7 @@ import sys
 from typing import Any, Callable, Dict, MutableMapping, Optional
 
 import structlog
+from asgi_correlation_id import correlation_id
 
 # ---------------------------------------------------------------------------
 # Service context — service/version/environment stamped on every log line, so
@@ -65,6 +66,9 @@ def set_trace_handler(handler: Optional[Callable[[str, str, Dict[str, Any]], Non
     set_trace_handler(route_to_secure_log)
     ```
 
+    The ``event_dict`` snapshot follows the root schema — the log text is
+    under ``message``, alongside ``correlation_id``, ``service``, etc.
+
     Pass ``None`` to remove the handler.
     """
     global _trace_handler
@@ -103,14 +107,9 @@ def _add_correlation_id(
     falsely implies correlation where there is none.
     """
     if "correlation_id" not in event_dict:
-        try:
-            from asgi_correlation_id import correlation_id
-
-            cid = correlation_id.get()
-            if cid:
-                event_dict["correlation_id"] = cid
-        except Exception:  # pragma: no cover - asgi-correlation-id is a hard dep
-            pass
+        cid = correlation_id.get()
+        if cid:
+            event_dict["correlation_id"] = cid
     return event_dict
 
 
@@ -213,10 +212,11 @@ def configure_logging(
         _add_service_context,
         # correlation ID on every line (when a context is bound)
         _add_correlation_id,
+        # "message" is the schema key — renamed BEFORE _error_type_only so the
+        # trace handler's event_dict snapshot matches the documented schema
+        _rename_event_to_message,
         # error_type only; full traces go to the gated handler
         _error_type_only,
-        # "message" is the schema key
-        _rename_event_to_message,
     ]
 
     structlog.configure(

@@ -107,7 +107,6 @@ def bind_from_sqs_message(message: Dict[str, Any]) -> str:
     Falls back to a fresh random ID if the attribute is absent, so a log
     line is never emitted without one.
     """
-    value = None
     attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
     attr = attrs.get(SQS_ATTRIBUTE_NAME) or {}
     value = attr.get("StringValue") or attr.get("stringValue")
