@@ -28,7 +28,7 @@ Basic Usage:
 """
 
 from .correlation import get_correlation_id
-from .logging_config import configure_logging, get_logger
+from .logging_config import configure_logging, get_logger, set_trace_handler
 from .models import BusinessEventConfig, ObservabilityConfig
 
 __version__ = "0.3.1"
@@ -40,6 +40,7 @@ __all__ = [
     # Logging
     "configure_logging",
     "get_logger",
+    "set_trace_handler",
     # Utilities
     "get_correlation_id",
 ]

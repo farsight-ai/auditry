@@ -77,6 +77,15 @@ class ObservabilityConfig(BaseModel):
         default=True,
         description="Whether to log response bodies for the application"
     )
+    log_exception_messages: bool = Field(
+        default=False,
+        description=(
+            "Whether to include str(exception) in error logs. Off by default: "
+            "exception messages frequently interpolate user content. The error "
+            "TYPE and correlation ID are always logged; full tracebacks route "
+            "via auditry.set_trace_handler to a gated destination."
+        )
+    )
     excluded_paths: Optional[Union[List[str], Dict[str, List[str]]]] = Field(
         default=None,
         description=(

@@ -187,20 +187,34 @@ class RequestResponseLogger:
         """
         self._bind_context(correlation_id, user_id)
 
-        # Build log entry
+        # Build log entry.
+        # The error TYPE and correlation ID are safe to log freely. The
+        # exception MESSAGE and traceback can interpolate sensitive user
+        # content, so they are not serialized here — exc_info is passed
+        # through so the configured processor extracts error_type and routes
+        # the full trace to the gated handler, if any (see
+        # auditry.logging_config.set_trace_handler).
         log_entry = {
             "service": self.service_name,
             "request": request_data,
             "execution_duration_ms": duration_ms,
+            "error_type": type(error).__name__,
+            # Kept for backward compatibility with existing dashboards:
             "exception_type": type(error).__name__,
-            "exception_message": str(error),
         }
+        if self.config.log_exception_messages:
+            # Explicit opt-in only — see the note on the config field.
+            log_entry["exception_message"] = str(error)
 
-        # Log the error
+        # Log the error. exc_info is the explicit tuple for the *supplied*
+        # exception, not exc_info=True: log_error may be called after the
+        # caller's except block has ended (or for a different exception than
+        # the currently-active one), and sys.exc_info() would then be empty
+        # or wrong.
         self.logger.error(
             f"Request failed: {request_data['method']} {request_data['path']} - "
-            f"Error: {type(error).__name__}: {str(error)} - Duration: {duration_ms:.2f}ms",
-            exc_info=True,
+            f"Error: {type(error).__name__} - Duration: {duration_ms:.2f}ms",
+            exc_info=(type(error), error, error.__traceback__),
             **log_entry
         )
 
