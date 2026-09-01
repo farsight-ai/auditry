@@ -190,24 +190,172 @@ async def get_user(user_id: str):
 
 ### Propagating to Downstream Services
 
+`outbound_headers()` builds the headers for you, generating an ID if none is
+bound yet so an outbound call is never made without one:
+
 ```python
 import httpx
-from auditry import get_correlation_id
+from auditry import outbound_headers
 
 @app.get("/proxy")
 async def proxy_request():
-    # Get the current correlation ID
-    correlation_id = get_correlation_id()
-
-    # Pass it to downstream services
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://downstream-service.com/api/data",
-            headers={"X-Request-ID": correlation_id}  # Use your org's header name
+            headers=outbound_headers(),          # {"X-Request-ID": "<id>"}
         )
 
     return response.json()
 ```
+
+Pass `extra=` to merge with headers you were already sending, and `header_name=`
+if your organization uses a different header. Attach these to third-party API
+calls too, wherever the SDK accepts custom headers — it makes the vendor's
+audit trail line up with yours.
+
+## Correlation Propagation Beyond HTTP
+
+The middleware binds the correlation ID for HTTP requests. Everything outside
+that request cycle — queue workers, schedulers, cron jobs, scripts — has to bind
+one itself, **before the first log line**, or those logs correlate with nothing.
+
+### Workers and Background Jobs
+
+```python
+from auditry import configure_logging, get_logger, with_correlation
+
+# Workers too, not just the API. version falls back to SERVICE_VERSION if unset.
+configure_logging(service="my-worker", version="1.4.2", environment="prod")
+logger = get_logger(__name__)
+
+@with_correlation
+async def process_job(ctx, job_spec, correlation_id=None):
+    # The ID is bound before this body runs, so every line below carries it.
+    logger.info("job started", job_type=job_spec["type"])
+```
+
+The decorator takes the ID from a `correlation_id` keyword argument when the
+producer passes one, and generates a fresh UUID4 otherwise. It leaves the kwarg
+in place if your function accepts it and strips it if not, so you can decorate
+functions that never declared it.
+
+For manual control, use `bind_correlation_id(value)` (propagate an inbound ID —
+never regenerate mid-chain) or `ensure_correlation_id()` (return the current ID,
+binding a fresh one if unset).
+
+### Queue Hops (SQS / SNS)
+
+```python
+from auditry import bind_from_sqs_message, sqs_message_attributes
+
+# Producer
+sqs.send_message(
+    QueueUrl=queue_url,
+    MessageBody=json.dumps(job),
+    MessageAttributes=sqs_message_attributes(),
+)
+
+# Consumer — call this BEFORE the first log line
+for message in response["Messages"]:
+    bind_from_sqs_message(message)
+    logger.info("processing message")
+```
+
+`bind_from_sqs_message` falls back to a fresh ID when the attribute is absent,
+so a consumer never logs without one.
+
+IDs that auditry *generates* are always random UUID4s — opaque, never derived
+from user data. Inbound IDs are propagated verbatim (that is the point of
+propagation), so the randomness guarantee holds end-to-end only when the
+edge service generated the ID. Don't accept correlation IDs from untrusted
+callers into systems that assume opacity.
+
+## Metrics (CloudWatch EMF)
+
+`MetricsLogger` emits CloudWatch [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format.html):
+a metric is a structured JSON log line that CloudWatch extracts at ingestion.
+That means **no AWS SDK dependency, no network call on the request path, and no
+credentials to manage** — metrics ride the log driver you already have.
+
+```python
+from auditry import MetricsLogger
+
+metrics = MetricsLogger(namespace="MyOrg/MyService", service="my-service")
+
+metrics.count("JobsSubmitted")                       # +1
+metrics.count("JobsSubmitted", 5)                    # +5
+metrics.timing("RenderLatency", 42.7)                # milliseconds
+metrics.zero("RateLimited")                          # see below
+```
+
+### Timing Dependency Calls
+
+`dependency_call()` times a call and records success or failure, with the
+exception class as an `ErrorType` dimension:
+
+```python
+with metrics.dependency_call("dynamodb", resource="jobs-table"):
+    table.get_item(Key={"id": job_id})
+```
+
+That emits `Latency` (ms), `Success`, and `Error` under a `Dependency`
+(plus optional `Resource`) dimension. A success emits `Error: 0` and a failure
+emits `Success: 0`, so neither series ever goes silent. The exception
+propagates unchanged — this measures, it doesn't swallow.
+
+### Why `zero()` Exists
+
+Monitoring systems forget metrics that stop reporting. If you only emit
+`RateLimited` when rate limiting happens, then "no data" and "no problem" look
+identical, and an alarm on that metric can never fire reliably. Emitting an
+explicit zero on the healthy path keeps the series alive so "no data" alarms
+work.
+
+### Dimensions Are Guarded
+
+Dimension names are validated against a forbidden-pattern list (`userid`,
+`email`, `filename`, `prompt`, `message`, and similar), and a match raises
+`ForbiddenDimensionError` **instead of emitting**:
+
+```python
+metrics.count("Uploads", dimensions={"user_email": email})   # ForbiddenDimensionError
+metrics.count("Uploads", dimensions={"FileType": "pdf"})     # fine
+```
+
+This is deliberately louder than the equivalent mistake in a log line. Metrics
+stores are unencrypted, broadly readable, and not selectively erasable — you
+cannot delete one user's data out of a metric after the fact. Failing at the
+call site is cheaper than discovering it in review, or not at all.
+
+There is also a hard cap of 8 dimensions per record (`ValueError`), since every distinct
+dimension set is a separately billable metric.
+
+### Rollup Dimension Sets
+
+An error metric dimensioned by error type is unalarmable on its own: an alarm on
+the coarse series finds no data, and you cannot enumerate every exception class
+a dependency might raise. So `dependency_call()` records each error under
+**both** `[Service, Dependency, ErrorType]` and `[Service, Dependency]` — one
+record, no double counting within a set. Alarm on the coarse series, then use
+the fine one to see which error type drove it.
+
+When `resource=` is passed, the fine set gains a `Resource` dimension but the
+rollup stays `[Service, Dependency]`, and successes roll up there too — so the
+per-dependency alarm series always has data (`Error: 0` between failures), no
+matter how the calls are scoped.
+
+`emit()` exposes the same mechanism directly:
+
+```python
+metrics.emit(
+    {"Error": 1},
+    dimensions={"Dependency": "s3", "ErrorType": "ClientError"},
+    rollup_dimension_sets=[["Dependency"]],   # also record under [Service, Dependency]
+)
+```
+
+Rollup names must already be present on the record, or `emit()` raises
+`ValueError`.
 
 ## User Tracking
 
