@@ -62,12 +62,12 @@ class QuartMiddleware(BaseMiddleware):
         @self.app.after_request
         async def log_request_response(response: Response) -> Response:
             """Log the request/response after processing."""
-            # Check if this path was excluded
+            # Check if this path was excluded. No logging, and no manual
+            # header work: CorrelationIdMiddleware (wrapped around the ASGI
+            # app in _setup_correlation_middleware) appends the
+            # correlation-ID header to every response — setting it here too
+            # produced a duplicate header.
             if getattr(request, "observability_excluded", False):
-                # Still add correlation ID to response headers for excluded paths
-                correlation_id = getattr(request, "observability_correlation_id", None)
-                if correlation_id and self.config.correlation_id_header:
-                    response.headers[self.config.correlation_id_header] = correlation_id
                 return response
 
             # Check if we have request data (might not if before_request wasn't called)
@@ -99,9 +99,8 @@ class QuartMiddleware(BaseMiddleware):
                     user_id=user_id,
                 )
 
-                # Add correlation ID to response headers (same as non-streaming)
-                if correlation_id:
-                    response.headers[self.config.correlation_id_header] = correlation_id
+                # (Correlation-ID response header is added by
+                # CorrelationIdMiddleware at the ASGI layer, not here.)
 
                 # Clear cache and return immediately
                 self.request_adapter.clear_cache(request)
@@ -122,9 +121,8 @@ class QuartMiddleware(BaseMiddleware):
             raw_response_data = await self.response_adapter.extract_all(response)
             response_data = self.logger.prepare_response_data(raw_response_data)
 
-            # Add correlation ID to response headers
-            if correlation_id and self.config.correlation_id_header:
-                response.headers[self.config.correlation_id_header] = correlation_id
+            # (Correlation-ID response header is added by
+            # CorrelationIdMiddleware at the ASGI layer, not here.)
 
             # Log successful request
             self.logger.log_success(

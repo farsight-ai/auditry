@@ -326,16 +326,22 @@ All logs are structured JSON, ready for log aggregators:
 
 ### Automatic Redaction
 
-Automatically redacts these sensitive field patterns in all logged requests/responses:
+Automatically redacts these sensitive field patterns in all logged request
+bodies, response bodies, headers, **and query parameters**:
 
-- `password`
-- `token`
-- `api_key` / `apikey`
-- `secret`
-- `authorization`
+- `password` / `passwd`
+- `token` / `jwt` / `bearer`
+- `api_key` / `apikey` / `x-api-key`
+- `access_key` / `private_key`
+- `secret` / `credential`
+- `authorization` / `proxy-authorization` / `x-auth`
+- `cookie` / `set-cookie`
+- `otp` / `one_time_password`
+- `signature`
+- `csrf` / `xsrf`
 - `ssn` / `social_security_number`
 - `credit_card` / `creditcard`
-- `x-api-key`
+- `x-amz-security-token`
 
 Add custom patterns via configuration:
 

@@ -53,9 +53,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lst4rk/auditry"
-Repository = "https://github.com/lst4rk/auditry"
-Issues = "https://github.com/lst4rk/auditry/issues"
+Homepage = "https://github.com/farsight-ai/auditry"
+Repository = "https://github.com/farsight-ai/auditry"
+Issues = "https://github.com/farsight-ai/auditry/issues"
 
 [build-system]
 requires = ["setuptools>=61.0,<70.0", "wheel"]
