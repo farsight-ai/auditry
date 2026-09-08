@@ -19,9 +19,11 @@ Conventions enforced here:
   value.
 - instrumentation never breaks the code it instruments. On the emit path a
   violation drops the record and logs one warning per offending name; it
-  does not raise into the request handler. ``strict=True`` restores raising
-  for tests and local development. ``default_dimensions`` are validated at
-  construction (startup, not the hot path) and always raise.
+  does not raise into the request handler. In **strict mode** the same
+  violations raise — resolved process-wide by ``configure_logging()`` from
+  the environment (strict only in a known non-production environment), or
+  forced per instance with ``strict=``. ``default_dimensions`` are validated
+  at construction (startup, not the hot path) and always raise.
 - metric records ride the same log pipeline as everything else: when
   ``configure_logging()`` has run, each record carries the root schema
   (``timestamp``, ``service``, ``version``, ``environment``,
@@ -50,6 +52,8 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Type
 
 import structlog
+
+from .logging_config import is_strict
 
 __all__ = ["MetricsLogger", "ForbiddenDimensionError"]
 
@@ -214,9 +218,10 @@ class MetricsLogger:
         sink: Writable used for output instead of the log pipeline. A test
             seam — pass a StringIO to capture raw EMF lines.
         strict: Raise on emit-path violations instead of dropping the record
-            and warning. Off by default so instrumentation can never break
-            the code it measures; turn it on in tests and local development
-            to catch a PII-named dimension the moment it is written.
+            and warning. Leave unset (the default) to follow the process-wide
+            policy that ``configure_logging()`` derives from the environment:
+            strict in a known non-production environment, production-safe
+            everywhere else. Pass True/False to override for this instance.
     """
 
     def __init__(
@@ -225,10 +230,10 @@ class MetricsLogger:
         service: Optional[str] = None,
         default_dimensions: Optional[Dict[str, Any]] = None,
         sink: Any = None,
-        strict: bool = False,
+        strict: Optional[bool] = None,
     ):
         self.namespace = namespace
-        self.strict = strict
+        self._strict = strict
         self.default_dimensions: Dict[str, str] = {}
         if service:
             self.default_dimensions["Service"] = service
@@ -241,6 +246,12 @@ class MetricsLogger:
         self._sink = sink
         self._warned: Set[Tuple[str, str]] = set()
         logging.getLogger(_LOGGER_NAME).setLevel(logging.INFO)
+
+    @property
+    def strict(self) -> bool:
+        """Instance override if given, else the process-wide policy — read at
+        emit time, so configure_logging() may run after construction."""
+        return self._strict if self._strict is not None else is_strict()
 
     # -- core ---------------------------------------------------------------
 
@@ -266,8 +277,8 @@ class MetricsLogger:
         double counting per set.
 
         A record that fails validation is dropped with one warning per
-        offending name (or raises, with ``strict=True``); this never raises
-        into the caller by default.
+        offending name (or raises, in strict mode); this never raises into the
+        caller in production.
         """
         if not metrics:
             return

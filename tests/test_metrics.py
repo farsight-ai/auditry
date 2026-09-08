@@ -8,17 +8,21 @@ import pytest
 import structlog
 from asgi_correlation_id import correlation_id
 
-from auditry.logging_config import _set_config_service, configure_logging
+from auditry.logging_config import _set_config_service, _set_strict, configure_logging
 from auditry.metrics import ForbiddenDimensionError, MetricsLogger
 
 
 @pytest.fixture(autouse=True)
-def _isolate():
+def _isolate(monkeypatch):
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("AUDITRY_STRICT", raising=False)
     correlation_id.set(None)
     _set_config_service(None)
+    _set_strict(False)
     yield
     correlation_id.set(None)
     _set_config_service(None)
+    _set_strict(False)
     structlog.reset_defaults()
     root = logging.getLogger()
     for h in root.handlers[:]:
@@ -369,3 +373,45 @@ def test_emit_rejects_reserved_and_colliding_names():
     lenient.emit({"_aws": 1})
     lenient.emit({"Service": 1})
     assert sink.getvalue() == ""
+
+
+class TestStrictFollowsProcessPolicy:
+    """MetricsLogger(strict=None) follows the policy configure_logging()
+    resolved from the environment; an explicit instance value overrides it."""
+
+    def test_default_follows_process_policy(self):
+        logger, sink = make_logger()
+        _set_strict(True)
+        with pytest.raises(ForbiddenDimensionError):
+            logger.count("X", dimensions={"userId": "u"})
+        _set_strict(False)
+        logger.count("X", dimensions={"userId": "u"})  # dropped, no raise
+        assert sink.getvalue() == ""
+
+    def test_instance_override_beats_policy(self):
+        _set_strict(True)
+        lenient, sink = make_logger(strict=False)
+        lenient.count("X", dimensions={"userId": "u"})  # no raise
+        _set_strict(False)
+        strict_logger, _ = make_logger(strict=True)
+        with pytest.raises(ForbiddenDimensionError):
+            strict_logger.count("X", dimensions={"userId": "u"})
+        assert sink.getvalue() == ""
+
+    def test_configure_logging_environment_decides(self, capsys):
+        # The same call site raises in dev and warns in prod — nothing to
+        # wire per service.
+        configure_logging(service="svc", environment="dev")
+        with pytest.raises(ForbiddenDimensionError):
+            MetricsLogger(namespace="T", service="svc").count("X", dimensions={"userId": "u"})
+        configure_logging(service="svc", environment="prod")
+        MetricsLogger(namespace="T", service="svc").count("X", dimensions={"userId": "u"})
+        assert any(r.get("metric_dropped") for r in stream_records(capsys))
+
+    def test_policy_is_read_at_emit_time(self):
+        # A module-level MetricsLogger built before configure_logging() still
+        # follows the policy configure_logging() resolves later.
+        logger, sink = make_logger()
+        configure_logging(service="svc", environment="sandbox")
+        with pytest.raises(ForbiddenDimensionError):
+            logger.count("X", dimensions={"prompt": "p"})
