@@ -34,6 +34,7 @@ from .models import BusinessEventConfig, ObservabilityConfig
 from .propagation import (
     bind_correlation_id,
     bind_from_sqs_message,
+    bound_correlation_id,
     ensure_correlation_id,
     outbound_headers,
     sqs_message_attributes,
@@ -53,6 +54,7 @@ __all__ = [
     # Correlation & propagation
     "get_correlation_id",
     "bind_correlation_id",
+    "bound_correlation_id",
     "ensure_correlation_id",
     "outbound_headers",
     "sqs_message_attributes",

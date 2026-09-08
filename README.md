@@ -208,8 +208,10 @@ async def proxy_request():
     return response.json()
 ```
 
-Pass `extra=` to merge with headers you were already sending, and `header_name=`
-if your organization uses a different header. Attach these to third-party API
+The header name defaults to your configured `correlation_id_header` (seeded when
+`create_middleware` runs), so a service that customizes the inbound header sends
+the same name outbound. Pass `extra=` to merge with headers you were already
+sending, and `header_name=` to override the name for one call. Attach these to third-party API
 calls too, wherever the SDK accepts custom headers — it makes the vendor's
 audit trail line up with yours.
 
@@ -239,9 +241,27 @@ producer passes one, and generates a fresh UUID4 otherwise. It leaves the kwarg
 in place if your function accepts it and strips it if not, so you can decorate
 functions that never declared it.
 
-For manual control, use `bind_correlation_id(value)` (propagate an inbound ID —
-never regenerate mid-chain) or `ensure_correlation_id()` (return the current ID,
-binding a fresh one if unset).
+If a decorated handler runs while an ID is already bound in the context (the
+consumer loop called `bind_from_sqs_message` first), it continues that trace
+rather than starting a new one — an ID in flight is propagated, never replaced.
+
+When the unit of work isn't a function, `bound_correlation_id()` does the same
+thing as a context manager — binds for the block, restores the previous context
+after, so a long-lived worker never logs a finished job's ID against the next:
+
+```python
+from auditry import bound_correlation_id
+
+for message in receive():
+    with bound_correlation_id(extract_id(message)):
+        logger.info("processing")        # carries this message's ID
+# nothing after the block does
+```
+
+`bind_correlation_id(value)` is the **sticky** form — it binds and leaves it
+bound for the rest of the context's life. Use it at a true edge (a script, a
+one-shot process, a startup hook), not per job in a long-lived worker.
+`ensure_correlation_id()` returns the current ID, binding a fresh one if unset.
 
 ### Queue Hops (SQS / SNS)
 
@@ -288,6 +308,18 @@ metrics.timing("RenderLatency", 42.7)                # milliseconds
 metrics.zero("RateLimited")                          # see below
 ```
 
+### Metrics Ride the Log Pipeline
+
+Once `configure_logging()` has run, a metric record is emitted through the same
+pipeline as every other line — so alongside the EMF payload it carries the root
+schema (`timestamp`, `service`, `version`, `environment`) **and the
+`correlation_id`** of the request that produced it. CloudWatch ignores the extra
+keys when extracting the metric; you get to tie a latency spike back to the
+exact request in Logs Insights. The metrics logger's level is pinned to INFO, so
+a `WARNING` root level can't silently discard metrics. If logging was never
+configured (a script, a bare test), records fall back to a raw single-line write
+on stdout — EMF extraction never depends on logging setup.
+
 ### Timing Dependency Calls
 
 `dependency_call()` times a call and records success or failure, with the
@@ -314,21 +346,46 @@ work.
 ### Dimensions Are Guarded
 
 Dimension names are validated against a forbidden-pattern list (`userid`,
-`email`, `filename`, `prompt`, `message`, and similar), and a match raises
-`ForbiddenDimensionError` **instead of emitting**:
+`email`, `filename`, `prompt`, `message`, and similar). A match means the
+record is **dropped, not emitted** — and one warning is logged per offending
+name, so a hot path with a bad dimension can't turn into a log storm:
 
 ```python
-metrics.count("Uploads", dimensions={"user_email": email})   # ForbiddenDimensionError
+metrics.count("Uploads", dimensions={"user_email": email})   # dropped + warned
 metrics.count("Uploads", dimensions={"FileType": "pdf"})     # fine
 ```
 
-This is deliberately louder than the equivalent mistake in a log line. Metrics
-stores are unencrypted, broadly readable, and not selectively erasable — you
-cannot delete one user's data out of a metric after the fact. Failing at the
-call site is cheaper than discovering it in review, or not at all.
+Metrics stores are unencrypted, broadly readable, and not selectively erasable —
+you cannot delete one user's data out of a metric after the fact. That is why
+the guard exists. But instrumentation must never break the code it measures:
+a retry counter that 500s a request is a liability, not observation. So on the
+emit path a violation is a dropped metric and a warning, never an exception in
+your handler.
 
-There is also a hard cap of 8 dimensions per record (`ValueError`), since every distinct
-dimension set is a separately billable metric.
+Two exceptions to that, both deliberate:
+
+- **`default_dimensions` are validated at construction and always raise**
+  (`ForbiddenDimensionError`). That runs at startup, not on the hot path, and
+  failing fast there is cheap.
+- **`strict=True`** makes emit-path violations raise too. Turn it on in tests
+  and local development, so a PII-named dimension fails the moment it is
+  written rather than showing up as a warning in production logs:
+
+  ```python
+  metrics = MetricsLogger(namespace="MyOrg/MyService", service="my-service",
+                          strict=os.environ.get("ENVIRONMENT") != "prod")
+  ```
+
+Dimension values: numbers and booleans are ordinary values and are coerced with
+`str()` — `{"Attempt": 3}` is a retry counter, not a privacy violation. Anything
+else (a dict, `None`) is a `TypeError`, kept distinct from
+`ForbiddenDimensionError` so "you passed the wrong type" never reads as "you
+leaked PII". Values must be short, single-line identifiers (≤128 chars); a
+free-text value is dropped as user content.
+
+There is also a hard cap of 8 dimensions per record, since every distinct
+dimension set is a separately billable metric. Over the cap is dropped like any
+other violation (`ValueError` under `strict=True`).
 
 ### Rollup Dimension Sets
 
@@ -354,8 +411,8 @@ metrics.emit(
 )
 ```
 
-Rollup names must already be present on the record, or `emit()` raises
-`ValueError`.
+Rollup names must already be present on the record; otherwise the record is
+dropped with a warning (`ValueError` under `strict=True`).
 
 ## User Tracking
 
