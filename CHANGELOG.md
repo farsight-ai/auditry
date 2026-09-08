@@ -19,7 +19,21 @@ correlation propagation outside ASGI, and an EMF metrics helper.
 - `auditry.metrics.MetricsLogger` — dependency-free CloudWatch EMF emitter
   with `dependency_call()` timing, per-error-reason counts, zero-count
   support for no-data alarms, and validation that rejects PII/user-content
-  dimension names (`ForbiddenDimensionError`).
+  dimension names (`ForbiddenDimensionError`). Instrumentation never breaks
+  the caller: on the emit path a violation drops the record and warns once
+  per offending name; `strict=True` restores raising for tests/dev, and
+  `default_dimensions` always raise at construction. Numbers and booleans
+  coerce with `str()`; non-scalars are a `TypeError`. When
+  `configure_logging()` has run, metric records ride the shared pipeline
+  and carry the root schema plus `correlation_id`, so a metric ties back
+  to the request that produced it (`sink=` is a raw-line test seam; raw
+  stdout fallback when logging is unconfigured).
+- `bound_correlation_id()` — context-manager form of `bind_correlation_id`
+  that restores the previous context when the block ends; the recommended
+  form for long-lived workers. `with_correlation` propagates an ID already
+  bound in the context instead of starting a new trace. `outbound_headers()`
+  defaults to the configured `correlation_id_header`, seeded by
+  `create_middleware` (`X-Request-ID` remains the fallback).
 - `set_trace_handler(...)` — route full exception tracebacks to a gated
   destination of your choice; `AUDITRY_FULL_TRACEBACKS=true` inlines them for
   local development.
