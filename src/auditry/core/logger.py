@@ -73,8 +73,7 @@ class RequestResponseLogger:
         if self.config.log_request_headers and raw_data.get("headers"):
             prepared["headers"] = redact_headers(raw_data["headers"])
 
-        # Add query params if configured (redacted — a token in a query
-        # string must not bypass the redaction list)
+        # Add query params if configured
         if self.config.log_query_params and raw_data.get("query_params"):
             prepared["query_params"] = redact_data(
                 raw_data["query_params"], self.additional_redaction_patterns

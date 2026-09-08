@@ -34,10 +34,7 @@ class FastAPIMiddleware:
         path = str(request.url.path)
         method = request.method
 
-        # Handle excluded paths - no logging. The response still carries the
-        # correlation-ID header: CorrelationIdMiddleware (the outer layer
-        # added by create_middleware) appends it to every response, so this
-        # middleware must not add it too — that produced a duplicate header.
+        # Handle excluded paths - skip logging
         if should_exclude_path(path, method, self.config.excluded_paths):
             await self.app(scope, receive, send)
             return
@@ -109,10 +106,6 @@ class FastAPIMiddleware:
                 content_type = response_info["headers"].get("content-type", "")
                 if "text/event-stream" in content_type:
                     is_streaming = True
-
-                # NOTE: the correlation-ID response header is added by
-                # CorrelationIdMiddleware (the outer layer), not here —
-                # adding it in both places produced a duplicate header.
 
             elif message["type"] == "http.response.body" and not is_streaming:
                 body = message.get("body", b"")
