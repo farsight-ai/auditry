@@ -852,11 +852,27 @@ tooling that reads them rather than in your service.
    nothing looks exactly like a healthy service. Audit your metric filters
    before upgrading any service with alarms on log patterns.
 
-2. **Error logs no longer carry tracebacks or `exception_message`.**
+2. **Error logs no longer carry tracebacks, `exception_message`, or
+   `exception_type`.**
 
-   They carry `error_type` and the correlation ID instead. `exception_type` is
-   unchanged, so dashboards keyed on it keep working. See
+   auditry's own error lines carry `error_type` (the exception class name) and
+   the correlation ID, and nothing else. `exception_type` is **removed** — it
+   duplicated `error_type`, and pretending to preserve dashboards keyed on it
+   while the `event` → `message` rename breaks those same dashboards was
+   incoherent. Dashboards and queries keyed on `exception_type` move to
+   `error_type` at the same time they move from `event` to `message`. The
+   human-readable message no longer embeds the class name either. See
    [Exception Details](#exception-details) to opt back in.
+
+   This applies to **auditry's own records** only: the middleware's
+   request/response lines and anything logged through `get_logger()`. Plain
+   stdlib loggers in your code or a vendor SDK keep their tracebacks (in the
+   JSON-escaped `exception` field) — upgrading does not delete the stack trace
+   from your application's own `except` blocks.
+
+   If you register a trace handler, it receives the live `exc_info` tuple
+   (`error_type, exc_info, event_dict`), not rendered text — so error trackers
+   can capture the real exception object.
 
 3. **Health-probe requests are no longer logged.** Log-derived request counts
    will drop. See [Health Probes Are Excluded by Default](#health-probes-are-excluded-by-default).

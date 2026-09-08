@@ -33,11 +33,24 @@ correlation propagation outside ASGI, and an EMF metrics helper.
 - **Log schema:** the message key is now `message` (was structlog's `event`),
   and `service`/`version`/`environment` appear on every line — update saved
   queries that referenced `event`.
-- **Error logs** no longer serialize tracebacks or `str(exception)` by
-  default; they carry `error_type` (exception class name) + correlation ID.
-  Exception messages and stack traces frequently interpolate user-supplied
-  content; opt back in per service via `log_exception_messages` or the trace
-  handler.
+- **Error logs** (auditry's own records: middleware lines and `get_logger()`
+  users) no longer serialize tracebacks or `str(exception)` by default; they
+  carry `error_type` (exception class name) + correlation ID. Exception
+  messages and stack traces frequently interpolate user-supplied content; opt
+  back in per service via `log_exception_messages` or the trace handler.
+  `exception_type` is **removed** — it duplicated `error_type`; move
+  dashboards keyed on it to `error_type`. Foreign stdlib records
+  (`logging.getLogger(...)` in application or vendor code) share the root
+  schema but **keep their tracebacks**.
+- **Trace handler contract:** `set_trace_handler` handlers receive
+  `(error_type, exc_info, event_dict)` — the live exception tuple, so error
+  trackers can capture the real exception object; render text yourself if you
+  need text. `AUDITRY_FULL_TRACEBACKS` is resolved once at `configure_logging()`
+  and inlines the raw (JSON-escaped) traceback, not a `" | "`-flattened one.
+- **One service identity:** `create_middleware` seeds the process-wide
+  `service` from `ObservabilityConfig.service_name`; it takes precedence over
+  `configure_logging(service=)` / `SERVICE_NAME`, which remain the fallback for
+  processes without middleware (workers, scripts).
 - **Query parameters now pass through redaction** — a token in a query string
   no longer bypasses the field-name redaction list.
 - Expanded the default redaction list (`jwt`, `bearer`, `otp`, `access_key`,
