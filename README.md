@@ -1012,6 +1012,11 @@ tooling that reads them rather than in your service.
   control access to.
 - **Root log schema** — `service` / `version` / `environment` on every line, and
   the correlation ID attached to *every* line rather than only middleware ones.
+- **Strict mode** — the `environment` you pass to `configure_logging()` now also
+  decides whether instrumentation failures raise (known non-production names)
+  or degrade to drop-and-warn (production, and anything unrecognized). Nothing
+  to wire per service. See
+  [Strict Mode: Loud in Non-Production](#strict-mode-loud-in-non-production).
 
 ## Migration Guide: 0.2.x to 0.3.0
 

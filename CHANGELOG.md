@@ -28,6 +28,14 @@ correlation propagation outside ASGI, and an EMF metrics helper.
   and carry the root schema plus `correlation_id`, so a metric ties back
   to the request that produced it (`sink=` is a raw-line test seam; raw
   stdout fallback when logging is unconfigured).
+- **Strict mode** — one process-wide policy, resolved by `configure_logging()`:
+  instrumentation failures (a bad metric dimension, a broken trace handler)
+  raise in a *known* non-production environment (`local`, `dev`, `sandbox`,
+  `test`, `staging`, …) and degrade to drop-and-warn everywhere else —
+  production, unrecognized names, and no environment at all. Overrides:
+  `configure_logging(strict=)`, `AUDITRY_STRICT`, `MetricsLogger(strict=)`;
+  `is_strict()` exposes the result. Instrumentation never fails the unit of
+  work it measures in production.
 - `bound_correlation_id()` — context-manager form of `bind_correlation_id`
   that restores the previous context when the block ends; the recommended
   form for long-lived workers. `with_correlation` propagates an ID already
