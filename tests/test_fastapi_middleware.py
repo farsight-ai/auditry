@@ -157,3 +157,23 @@ def test_business_event_extracted_from_response_body():
     body = logged_kwargs["response_data"].get("body")
     assert body is not None
     assert body["order_id"] == "abc-123"
+
+
+def test_create_middleware_seeds_service_identity():
+    """ObservabilityConfig.service_name becomes the process-wide ``service``
+    for every log line, not just the middleware's own."""
+    from auditry import logging_config
+
+    logging_config._set_config_service(None)
+    try:
+        create_middleware(
+            FastAPI(),
+            config=ObservabilityConfig(
+                service_name="seeded-service",
+                log_request_body=False,
+                log_response_body=False,
+            ),
+        )
+        assert logging_config._config_service == "seeded-service"
+    finally:
+        logging_config._set_config_service(None)
