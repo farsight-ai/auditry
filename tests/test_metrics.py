@@ -2,10 +2,27 @@
 
 import io
 import json
+import logging
 
 import pytest
+import structlog
+from asgi_correlation_id import correlation_id
 
+from auditry.logging_config import _set_config_service, configure_logging
 from auditry.metrics import ForbiddenDimensionError, MetricsLogger
+
+
+@pytest.fixture(autouse=True)
+def _isolate():
+    correlation_id.set(None)
+    _set_config_service(None)
+    yield
+    correlation_id.set(None)
+    _set_config_service(None)
+    structlog.reset_defaults()
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        root.removeHandler(h)
 
 
 def make_logger(**kwargs):
@@ -16,6 +33,10 @@ def make_logger(**kwargs):
 
 def records(sink):
     return [json.loads(line) for line in sink.getvalue().splitlines()]
+
+
+def stream_records(capsys):
+    return [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
 
 
 class TestEmit:
@@ -43,6 +64,13 @@ class TestEmit:
         assert rec["RareError"] == 0
         assert rec["OtherRareError"] == 0
 
+    def test_zero_with_no_names_emits_nothing(self):
+        # An empty metrics list is never a useful record.
+        logger, sink = make_logger()
+        logger.zero()
+        logger.zero(*[])
+        assert sink.getvalue() == ""
+
     def test_timing_unit(self):
         logger, sink = make_logger()
         logger.timing("Latency", 12.5)
@@ -51,23 +79,94 @@ class TestEmit:
         assert {"Name": "Latency", "Unit": "Milliseconds"} in metrics
 
 
+class TestPipelineRouting:
+    """Metric records ride the same log pipeline as everything else, so they
+    carry the root schema and the correlation ID; CloudWatch ignores the
+    extra keys."""
+
+    def test_record_carries_root_schema_and_correlation_id(self, capsys):
+        configure_logging(service="from-configure", version="1.2.3", environment="test")
+        _set_config_service("svc-cfg")
+        correlation_id.set("req-42")
+        MetricsLogger(namespace="Test/NS", service="svc-cfg").count("Requests")
+        (rec,) = stream_records(capsys)
+        # EMF payload intact ...
+        assert rec["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "Test/NS"
+        assert rec["Requests"] == 1
+        assert rec["Service"] == "svc-cfg"
+        # ... plus the shared shape, which is what lets a metric be tied back
+        # to the request that produced it.
+        assert rec["correlation_id"] == "req-42"
+        assert rec["service"] == "svc-cfg"
+        assert rec["version"] == "1.2.3"
+        assert rec["environment"] == "test"
+        assert rec["level"] == "info"
+        assert rec["message"] == "metric"
+        assert "timestamp" in rec
+
+    def test_root_log_level_cannot_drop_metrics(self, capsys):
+        # A WARNING root level must not silently discard INFO metric lines.
+        configure_logging(level="WARNING", service="svc")
+        MetricsLogger(namespace="Test/NS", service="svc").count("Requests")
+        (rec,) = stream_records(capsys)
+        assert rec["Requests"] == 1
+
+    def test_falls_back_to_raw_stdout_without_logging_setup(self, capsys):
+        # EMF extraction must not depend on configure_logging() having run.
+        structlog.reset_defaults()
+        assert not structlog.is_configured()
+        MetricsLogger(namespace="Test/NS", service="svc").count("Requests")
+        (rec,) = stream_records(capsys)
+        assert rec["Requests"] == 1
+        assert "correlation_id" not in rec
+
+    def test_sink_is_a_raw_seam(self, capsys):
+        configure_logging(service="svc")
+        logger, sink = make_logger()
+        logger.count("Requests")
+        assert capsys.readouterr().out == ""
+        (rec,) = records(sink)
+        assert "timestamp" not in rec
+
+
 class TestDimensionGuard:
-    """PII/user content can never become a metric dimension."""
+    """PII/user content can never become a metric dimension — and a bad
+    dimension can never break the code path being measured."""
 
     @pytest.mark.parametrize(
         "bad_key",
         ["userId", "user_id", "USER-ID", "email", "userEmail", "fileName",
          "file_name", "documentTitle", "prompt", "objectKey", "full_name"],
     )
-    def test_forbidden_dimension_raises(self, bad_key):
+    def test_forbidden_dimension_drops_record(self, bad_key):
         logger, sink = make_logger()
-        with pytest.raises(ForbiddenDimensionError):
-            logger.count("X", dimensions={bad_key: "value"})
+        logger.count("X", dimensions={bad_key: "value"})  # does not raise
         assert sink.getvalue() == ""  # nothing emitted
 
-    def test_forbidden_default_dimension_raises_at_construction(self):
+    @pytest.mark.parametrize("bad_key", ["userId", "prompt"])
+    def test_forbidden_dimension_raises_in_strict_mode(self, bad_key):
+        logger, sink = make_logger(strict=True)
+        with pytest.raises(ForbiddenDimensionError):
+            logger.count("X", dimensions={bad_key: "value"})
+        assert sink.getvalue() == ""
+
+    def test_forbidden_default_dimension_always_raises_at_construction(self):
+        # Construction is startup, not the hot path: fail fast regardless.
         with pytest.raises(ForbiddenDimensionError):
             MetricsLogger(namespace="T", default_dimensions={"userId": "u1"}, sink=io.StringIO())
+
+    def test_drop_warns_once_per_offending_name(self, capsys):
+        configure_logging(service="svc")
+        logger, sink = make_logger()
+        for _ in range(5):
+            logger.count("X", dimensions={"userId": "u1"})
+        logger.count("X", dimensions={"prompt": "p"})
+        warnings = [r for r in stream_records(capsys) if r.get("metric_dropped")]
+        assert [w["dimension"] for w in warnings] == ["userId", "prompt"]
+        assert warnings[0]["violation"] == "ForbiddenDimensionError"
+        assert warnings[0]["metric_names"] == ["X"]
+        assert warnings[0]["level"] == "warning"
+        assert sink.getvalue() == ""
 
     def test_org_id_allowed(self):
         # Opaque tenant/org IDs are allowed.
@@ -75,10 +174,51 @@ class TestDimensionGuard:
         logger.count("X", dimensions={"OrgId": "org_123"})
         assert records(sink)[0]["OrgId"] == "org_123"
 
-    def test_too_many_dimensions(self):
-        logger, _ = make_logger()
-        with pytest.raises(ValueError):
+    def test_too_many_dimensions_drops(self):
+        logger, sink = make_logger()
+        logger.count("X", dimensions={f"D{i}": "v" for i in range(9)})
+        assert sink.getvalue() == ""
+
+    def test_too_many_dimensions_raises_in_strict_mode(self):
+        logger, _ = make_logger(strict=True)
+        with pytest.raises(ValueError, match="exceeds"):
             logger.count("X", dimensions={f"D{i}": "v" for i in range(9)})
+
+
+class TestDimensionValues:
+    def test_scalars_are_coerced_to_strings(self):
+        # A retry counter is an ordinary dimension value, not a privacy
+        # violation.
+        logger, sink = make_logger()
+        logger.count("Retries", dimensions={"Attempt": 3, "Ratio": 0.5, "Cached": True})
+        (rec,) = records(sink)
+        assert rec["Attempt"] == "3"
+        assert rec["Ratio"] == "0.5"
+        assert rec["Cached"] == "True"
+
+    def test_scalars_coerced_in_default_dimensions_too(self):
+        m = MetricsLogger(namespace="T", default_dimensions={"Shard": 7}, sink=io.StringIO())
+        assert m.default_dimensions["Shard"] == "7"
+
+    def test_non_scalar_is_a_type_error_not_a_policy_violation(self):
+        logger, sink = make_logger(strict=True)
+        with pytest.raises(TypeError):
+            logger.emit({"X": 1}, dimensions={"Dependency": {"nested": 1}})
+        with pytest.raises(TypeError):
+            logger.emit({"X": 1}, dimensions={"Dependency": None})
+        assert sink.getvalue() == ""
+
+    def test_values_must_be_bounded_identifiers(self):
+        """Value-side guard: empty, over-long, or multi-line values indicate
+        user content in a dimension. Pattern-matching values would misfire
+        ('email-service' is a fine Dependency), so the guard is structural."""
+        logger, sink = make_logger(strict=True)
+        for bad in ["", "a" * 129, "line1\nline2"]:
+            with pytest.raises(ForbiddenDimensionError):
+                logger.emit({"X": 1}, dimensions={"Dependency": bad})
+        # Legitimate identifiers that merely CONTAIN a forbidden word pass.
+        logger.emit({"X": 1}, dimensions={"Dependency": "email-service"})
+        assert records(sink)[0]["Dependency"] == "email-service"
 
 
 class TestDependencyCall:
@@ -105,11 +245,21 @@ class TestDependencyCall:
         assert rec["Success"] == 0
         assert rec["ErrorType"] == "KeyError"  # error reason counter
 
+    def test_bad_default_dimension_never_breaks_the_measured_call(self):
+        # The instrumented call runs and its result is returned even when the
+        # metric itself is dropped for a validation problem.
+        logger, sink = make_logger()
+        logger.default_dimensions["userId"] = "u1"  # bypass construction check
+        ran = []
+        with logger.dependency_call("redis"):
+            ran.append(True)
+        assert ran == [True]
+        assert sink.getvalue() == ""
+
 
 def test_dependency_call_error_rolls_up_to_dependency_set():
     """Error emission records under BOTH the full set (with ErrorType) and
     the coarser per-dependency set, so alarms need not enumerate error types."""
-    import io, json
     sink = io.StringIO()
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
     try:
@@ -130,7 +280,6 @@ def test_dependency_call_resource_error_still_rolls_up_to_dependency_set():
     """With resource=, the coarse rollup must stay [Service, Dependency] —
     a Resource in the rollup would leave the documented per-dependency alarm
     series with no data."""
-    import io, json
     sink = io.StringIO()
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
     try:
@@ -154,7 +303,6 @@ def test_dependency_call_resource_error_still_rolls_up_to_dependency_set():
 def test_dependency_call_resource_success_rolls_up_error_zero():
     """Success with resource= also records on the coarse set, so Error: 0
     keeps the per-dependency alarm series alive between failures."""
-    import io, json
     sink = io.StringIO()
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
     with m.dependency_call("dynamodb", resource="jobs-table"):
@@ -171,7 +319,6 @@ def test_dependency_call_resource_success_rolls_up_error_zero():
 def test_dependency_call_success_without_resource_has_single_set():
     """No resource, no rollup: dims already ARE the coarse set, and a
     duplicate dimension set would double-count within the record."""
-    import io, json
     sink = io.StringIO()
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
     with m.dependency_call("db"):
@@ -181,22 +328,26 @@ def test_dependency_call_success_without_resource_has_single_set():
     assert sorted(map(sorted, dim_sets)) == [["Dependency", "Service"]]
 
 
-def test_emit_rejects_rollup_dimensions_not_in_record():
-    import io, pytest
-    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
-    with pytest.raises(ValueError):
-        m.emit({"X": 1}, dimensions={"A": "a"}, rollup_dimension_sets=[["Nope"]])
+def test_emit_drops_when_rollup_dimensions_not_in_record():
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    m.emit({"X": 1}, dimensions={"A": "a"}, rollup_dimension_sets=[["Nope"]])
+    assert sink.getvalue() == ""
+    with pytest.raises(ValueError, match="rollup"):
+        MetricsLogger(namespace="Test/NS", service="svc", sink=sink, strict=True).emit(
+            {"X": 1}, dimensions={"A": "a"}, rollup_dimension_sets=[["Nope"]]
+        )
 
 
 def test_emit_validates_merged_dimension_set():
     """Defaults + call-specific dimensions are validated together — the
     cardinality cap can't be sidestepped by splitting them."""
-    import io, pytest
     m = MetricsLogger(
         namespace="Test/NS",
         service="svc",
         default_dimensions={f"D{i}": "x" for i in range(7)},  # 8 with Service
         sink=io.StringIO(),
+        strict=True,
     )
     with pytest.raises(ValueError, match="9 dimensions"):
         m.count("C", 1, dimensions={"Extra": "x"})
@@ -205,25 +356,16 @@ def test_emit_validates_merged_dimension_set():
 def test_emit_rejects_reserved_and_colliding_names():
     """The EMF record is flat — dimension/metric names must not collide with
     each other or with the reserved _aws metadata key."""
-    import io, pytest
-    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink, strict=True)
     with pytest.raises(ValueError, match="collide"):
         m.emit({"_aws": 1})
     with pytest.raises(ValueError, match="collide"):
         m.emit({"Service": 1})  # metric name overwrites the Service dimension
     with pytest.raises(ValueError, match="collide"):
         m.emit({"X": 1}, dimensions={"_aws": "v"})
-
-
-def test_dimension_values_must_be_bounded_identifiers():
-    """Value-side guard: non-string, empty, over-long, or multi-line values
-    indicate user content in a dimension and are rejected. Pattern-matching
-    values would misfire ('email-service' is a fine Dependency), so the
-    guard is structural."""
-    import io, pytest
-    m = MetricsLogger(namespace="Test/NS", service="svc", sink=io.StringIO())
-    for bad in [123, "", "a" * 129, "line1\nline2"]:
-        with pytest.raises(ForbiddenDimensionError):
-            m.emit({"X": 1}, dimensions={"Dependency": bad})
-    # Legitimate identifiers that merely CONTAIN a forbidden word pass.
-    m.emit({"X": 1}, dimensions={"Dependency": "email-service"})
+    # ... and in the default mode the same records are simply dropped.
+    lenient = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    lenient.emit({"_aws": 1})
+    lenient.emit({"Service": 1})
+    assert sink.getvalue() == ""

@@ -8,8 +8,11 @@ import pytest
 from asgi_correlation_id import correlation_id
 
 from auditry.propagation import (
+    _set_correlation_header,
     bind_correlation_id,
     bind_from_sqs_message,
+    bound_correlation_id,
+    correlation_header_name,
     ensure_correlation_id,
     outbound_headers,
     sqs_message_attributes,
@@ -24,8 +27,68 @@ def _clean_correlation_context():
     leaks into later tests. An autouse fixture rather than setup_function,
     because setup_function never runs for the class-based tests below."""
     token = correlation_id.set(None)
+    _set_correlation_header(None)
     yield
     correlation_id.reset(token)
+    _set_correlation_header(None)
+
+
+class TestScopedBinding:
+    """bound_correlation_id() binds for a block and restores the previous
+    context — the form a long-lived worker should use, so a finished unit
+    of work never leaks its ID onto what runs next."""
+
+    def test_restores_previous_context(self):
+        bind_correlation_id("outer")
+        with bound_correlation_id("inner") as cid:
+            assert cid == "inner"
+            assert correlation_id.get() == "inner"
+        assert correlation_id.get() == "outer"
+
+    def test_restores_unbound_context(self):
+        with bound_correlation_id("only"):
+            assert correlation_id.get() == "only"
+        assert correlation_id.get() is None
+
+    def test_restores_on_raise(self):
+        bind_correlation_id("outer")
+        with pytest.raises(RuntimeError):
+            with bound_correlation_id("inner"):
+                raise RuntimeError("boom")
+        assert correlation_id.get() == "outer"
+
+    def test_generates_when_absent(self):
+        with bound_correlation_id() as cid:
+            assert uuid.UUID(cid).version == 4
+            assert correlation_id.get() == cid
+
+    def test_sticky_bind_is_documented_as_sticky(self):
+        # The plain helper stays sticky (its contract for edges); the scoped
+        # form is the one that cleans up.
+        bind_correlation_id("sticky")
+        assert correlation_id.get() == "sticky"
+
+
+class TestHeaderName:
+    """outbound_headers() defaults to the configured correlation_id_header,
+    seeded by create_middleware, so a service that customizes the inbound
+    header sends the same name outbound."""
+
+    def test_default_without_config(self):
+        assert correlation_header_name() == "X-Request-ID"
+        bind_correlation_id("abc")
+        assert outbound_headers() == {"X-Request-ID": "abc"}
+
+    def test_configured_header_is_used(self):
+        _set_correlation_header("X-Trace-Id")
+        bind_correlation_id("abc")
+        assert correlation_header_name() == "X-Trace-Id"
+        assert outbound_headers() == {"X-Trace-Id": "abc"}
+
+    def test_explicit_header_name_still_wins(self):
+        _set_correlation_header("X-Trace-Id")
+        bind_correlation_id("abc")
+        assert outbound_headers(header_name="X-Job-Id") == {"X-Job-Id": "abc"}
 
 
 class TestBinding:
@@ -124,6 +187,32 @@ class TestDecorator:
             return correlation_id.get()
 
         assert uuid.UUID(task("x")).version == 4
+
+    def test_propagates_an_id_already_bound_in_context(self):
+        """The documented SQS pattern: bind_from_sqs_message() in the consumer
+        loop, then a decorated handler. The handler must continue that
+        trace, not start a new one."""
+        bind_from_sqs_message({
+            "MessageAttributes": {
+                "correlation_id": {"DataType": "String", "StringValue": "from-queue"}
+            }
+        })
+
+        @with_correlation
+        def handler(data):
+            return correlation_id.get()
+
+        assert handler("x") == "from-queue"
+
+    def test_explicit_kwarg_beats_bound_context(self):
+        bind_correlation_id("ambient")
+
+        @with_correlation
+        def handler(data):
+            return correlation_id.get()
+
+        assert handler("x", correlation_id="explicit") == "explicit"
+        assert correlation_id.get() == "ambient"  # and restored afterwards
 
 
 class TestDecoratorScoping:

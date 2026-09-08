@@ -9,6 +9,7 @@ from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
+from ..propagation import _set_correlation_header
 from ..path_matcher import should_exclude_path
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
 
@@ -221,9 +222,11 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         )
         ```
     """
-    # ObservabilityConfig.service_name is the service identity for every log
-    # line in this process, not just the middleware's own.
+    # ObservabilityConfig is the source of truth for the whole process: the
+    # service identity on every log line, and the header name that
+    # outbound_headers() uses so outbound calls match the inbound header.
     _set_config_service(config.service_name)
+    _set_correlation_header(config.correlation_id_header)
 
     # Create and register the middleware
     QuartMiddleware(app, config)
