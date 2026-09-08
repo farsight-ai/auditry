@@ -199,8 +199,6 @@ class RequestResponseLogger:
             "request": request_data,
             "execution_duration_ms": duration_ms,
             "error_type": type(error).__name__,
-            # Kept for backward compatibility with existing dashboards:
-            "exception_type": type(error).__name__,
         }
         if self.config.log_exception_messages:
             # Explicit opt-in only — see the note on the config field.
@@ -213,7 +211,7 @@ class RequestResponseLogger:
         # or wrong.
         self.logger.error(
             f"Request failed: {request_data['method']} {request_data['path']} - "
-            f"Error: {type(error).__name__} - Duration: {duration_ms:.2f}ms",
+            f"Duration: {duration_ms:.2f}ms",
             exc_info=(type(error), error, error.__traceback__),
             **log_entry
         )
