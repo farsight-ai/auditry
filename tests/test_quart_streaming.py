@@ -232,9 +232,7 @@ async def test_mixed_requests(app):
 
 @pytest.mark.asyncio
 async def test_request_id_header_appears_exactly_once():
-    """CorrelationIdMiddleware owns the response header; the observability
-    hooks must not add a second copy (regular, streaming, and excluded
-    paths alike)."""
+    """Exactly one X-Request-ID on regular, streaming, and excluded responses."""
     app = Quart(__name__)
     config = ObservabilityConfig(
         service_name="dedupe-svc",

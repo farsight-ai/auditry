@@ -63,11 +63,7 @@ class QuartMiddleware(BaseMiddleware):
         @self.app.after_request
         async def log_request_response(response: Response) -> Response:
             """Log the request/response after processing."""
-            # Check if this path was excluded. No logging, and no manual
-            # header work: CorrelationIdMiddleware (wrapped around the ASGI
-            # app in _setup_correlation_middleware) appends the
-            # correlation-ID header to every response — setting it here too
-            # produced a duplicate header.
+            # Check if this path was excluded
             if getattr(request, "observability_excluded", False):
                 return response
 
@@ -100,9 +96,6 @@ class QuartMiddleware(BaseMiddleware):
                     user_id=user_id,
                 )
 
-                # (Correlation-ID response header is added by
-                # CorrelationIdMiddleware at the ASGI layer, not here.)
-
                 # Clear cache and return immediately
                 self.request_adapter.clear_cache(request)
                 return response
@@ -121,9 +114,6 @@ class QuartMiddleware(BaseMiddleware):
             # Extract and prepare response data
             raw_response_data = await self.response_adapter.extract_all(response)
             response_data = self.logger.prepare_response_data(raw_response_data)
-
-            # (Correlation-ID response header is added by
-            # CorrelationIdMiddleware at the ASGI layer, not here.)
 
             # Log successful request
             self.logger.log_success(
