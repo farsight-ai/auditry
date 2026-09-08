@@ -21,8 +21,8 @@ correlation propagation outside ASGI, and an EMF metrics helper.
   support for no-data alarms, and validation that rejects PII/user-content
   dimension names (`ForbiddenDimensionError`). Instrumentation never breaks
   the caller: on the emit path a violation drops the record and warns once
-  per offending name; `strict=True` restores raising for tests/dev, and
-  `default_dimensions` always raise at construction. Numbers and booleans
+  per offending name; strict mode (below) restores raising where it is
+  cheap, and `default_dimensions` always raise at construction. Numbers and booleans
   coerce with `str()`; non-scalars are a `TypeError`. When
   `configure_logging()` has run, metric records ride the shared pipeline
   and carry the root schema plus `correlation_id`, so a metric ties back
