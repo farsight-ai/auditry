@@ -21,6 +21,11 @@ This module provides JSON-formatted logging with production-safe defaults:
   in the process.
 - The correlation ID is attached to every log line automatically (from the
   ASGI middleware context or a worker binding — see ``auditry.propagation``).
+- Instrumentation never fails the unit of work it measures. In production a
+  bad metric dimension or a broken trace handler degrades to "drop and
+  warn". In a *known* non-production environment the same failures raise
+  (**strict mode**, see :func:`is_strict`), so they are caught in tests,
+  local runs, dev, and sandbox — long before production.
 """
 
 import logging
@@ -50,6 +55,60 @@ _config_service: Optional[str] = None
 # Resolved once by configure_logging(), not per record.
 _full_tracebacks: bool = False
 _FULL_TRACEBACKS_ENV = "AUDITRY_FULL_TRACEBACKS"
+
+# ---------------------------------------------------------------------------
+# Strict mode — the loud version of instrumentation, for non-production only.
+# ---------------------------------------------------------------------------
+# Production rule: instrumentation never fails the unit of work it measures.
+# A bad metric dimension, a broken trace handler — in production these
+# degrade to "drop and warn". In non-production the same failures raise, so
+# they are caught in tests, local runs, dev, and sandbox, long before
+# production. configure_logging() resolves the policy once, from (highest
+# wins): an explicit strict= argument, the AUDITRY_STRICT env var, or the
+# environment name.
+#
+# Only a KNOWN non-production name turns strict on. Anything unrecognized —
+# including no environment at all — is treated as production. Deriving the
+# other way round ("strict unless it says prod") would turn strict on in a
+# dedicated customer account whose stage name carries no hint.
+NON_PRODUCTION_ENVIRONMENTS = frozenset({
+    "local", "dev", "development", "sandbox", "plat-sandbox",
+    "test", "testing", "ci", "qa", "staging", "stage",
+})
+NON_PRODUCTION_PREFIXES = ("local-", "dev-")
+_STRICT_ENV = "AUDITRY_STRICT"
+_strict: bool = False
+
+
+def is_non_production_environment(environment: Optional[str]) -> bool:
+    """True only for a *known* non-production environment name; unknown or
+    unset is treated as production."""
+    if not environment:
+        return False
+    name = environment.strip().lower()
+    return name in NON_PRODUCTION_ENVIRONMENTS or name.startswith(NON_PRODUCTION_PREFIXES)
+
+
+def is_strict() -> bool:
+    """Whether instrumentation failures raise (strict, non-production) or
+    degrade to drop-and-warn (production). Resolved by :func:`configure_logging`;
+    False until it runs."""
+    return _strict
+
+
+def _set_strict(value: bool) -> None:
+    """Set the policy directly (tests)."""
+    global _strict
+    _strict = value
+
+
+def _resolve_strict(explicit: Optional[bool], environment: Optional[str]) -> bool:
+    if explicit is not None:
+        return explicit
+    flag = os.environ.get(_STRICT_ENV, "").strip().lower()
+    if flag:
+        return flag in ("1", "true", "yes")
+    return is_non_production_environment(environment)
 
 ExcInfo = Tuple[Type[BaseException], BaseException, Optional[TracebackType]]
 TraceHandler = Callable[[str, ExcInfo, Dict[str, Any]], None]
@@ -193,7 +252,11 @@ def _error_type_only(
         try:
             handler(error_type, exc_info, dict(event_dict))
         except Exception:
-            # A failing trace handler must never break application logging.
+            if _strict:
+                # Non-production: a broken trace handler is a bug to fix now.
+                raise
+            # Production: a failing trace handler must never break
+            # application logging.
             event_dict["trace_handler_error"] = True
     if _full_tracebacks:
         import traceback as _tb
@@ -224,6 +287,7 @@ def configure_logging(
     service: Optional[str] = None,
     version: Optional[str] = None,
     environment: Optional[str] = None,
+    strict: Optional[bool] = None,
 ) -> None:
     """
     Configure application-wide structured logging using structlog.
@@ -233,6 +297,13 @@ def configure_logging(
     application startup — including worker processes (see
     ``auditry.propagation`` for binding correlation IDs outside ASGI).
 
+    Also resolves **strict mode** — whether instrumentation failures raise
+    (non-production) or degrade to drop-and-warn (production). Resolution,
+    highest wins: ``strict=`` here, the ``AUDITRY_STRICT`` env var (``1``/``0``),
+    then the environment: strict only for a *known* non-production name
+    (``local``, ``dev``, ``sandbox``, ``test``, ``staging``, …); production,
+    anything unrecognized, and no environment at all are production-safe.
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
             DEBUG should be off in production.
@@ -241,8 +312,10 @@ def configure_logging(
             precedence over both.
         version: Service version; falls back to SERVICE_VERSION.
         environment: Deployment environment; falls back to ENVIRONMENT.
+        strict: Force strict mode on or off. Leave unset to derive it from
+            the environment (see above).
     """
-    global _full_tracebacks
+    global _full_tracebacks, _strict
 
     _service_context.clear()
     resolved = {
@@ -252,6 +325,7 @@ def configure_logging(
     }
     _service_context.update({k: v for k, v in resolved.items() if v})
     _full_tracebacks = os.environ.get(_FULL_TRACEBACKS_ENV, "").lower() in ("1", "true", "yes")
+    _strict = _resolve_strict(strict, resolved["environment"])
 
     # The schema processors are shared by structlog-originated events and
     # foreign stdlib records (uvicorn, boto3, any library calling

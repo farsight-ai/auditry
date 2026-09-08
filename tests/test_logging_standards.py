@@ -10,20 +10,26 @@ from asgi_correlation_id import correlation_id
 from auditry import ObservabilityConfig
 from auditry.logging_config import (
     _set_config_service,
+    _set_strict,
     configure_logging,
     get_logger,
+    is_strict,
     set_trace_handler,
 )
 
 
 @pytest.fixture(autouse=True)
-def reset():
+def reset(monkeypatch):
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("AUDITRY_STRICT", raising=False)
     correlation_id.set(None)
     set_trace_handler(None)
     _set_config_service(None)
+    _set_strict(False)
     yield
     set_trace_handler(None)
     _set_config_service(None)
+    _set_strict(False)
     structlog.reset_defaults()
 
 
@@ -272,3 +278,69 @@ class TestServiceIdentity:
         assert rec["service"] == "from-config"
         assert rec["version"] == "9.9.9"
         assert rec["environment"] == "stage"
+
+
+class TestStrictPolicy:
+    """Instrumentation never fails the unit of work in production. In a KNOWN
+    non-production environment the same failures raise. configure_logging()
+    resolves the policy once: explicit > AUDITRY_STRICT > environment name."""
+
+    @pytest.mark.parametrize(
+        "env",
+        ["local", "local-chris", "dev", "dev-feature-x", "development", "sandbox",
+         "plat-sandbox", "test", "testing", "ci", "qa", "staging", "stage", "DEV"],
+    )
+    def test_known_non_production_names_are_strict(self, env):
+        configure_logging(service="s", environment=env)
+        assert is_strict() is True
+
+    @pytest.mark.parametrize(
+        "env", ["prod", "production", "customer-prod", "pitchbook", "prd", "live", None, ""]
+    )
+    def test_production_and_unknown_names_are_safe(self, env):
+        # Unknown and unset are production: the rule is absolute in the
+        # direction that never takes down a service call.
+        configure_logging(service="s", environment=env)
+        assert is_strict() is False
+
+    def test_environment_env_var_drives_derivation(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "sandbox")
+        configure_logging(service="s")
+        assert is_strict() is True
+
+    def test_auditry_strict_env_var_overrides_derivation(self, monkeypatch):
+        monkeypatch.setenv("AUDITRY_STRICT", "1")
+        configure_logging(service="s", environment="prod")
+        assert is_strict() is True
+        monkeypatch.setenv("AUDITRY_STRICT", "false")
+        configure_logging(service="s", environment="dev")
+        assert is_strict() is False
+
+    def test_explicit_argument_overrides_everything(self, monkeypatch):
+        monkeypatch.setenv("AUDITRY_STRICT", "1")
+        configure_logging(service="s", environment="dev", strict=False)
+        assert is_strict() is False
+        monkeypatch.setenv("AUDITRY_STRICT", "0")
+        configure_logging(service="s", environment="prod", strict=True)
+        assert is_strict() is True
+
+    def test_not_strict_before_configure_logging(self):
+        assert is_strict() is False
+
+    def test_failing_trace_handler_raises_in_strict_mode(self, capsys):
+        set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
+        logger, _ = configure_and_capture(capsys, service="s", environment="test")
+        with pytest.raises(RuntimeError, match="handler broke"):
+            try:
+                raise ValueError("x")
+            except ValueError:
+                logger.error("failed", exc_info=True)
+
+    def test_failing_trace_handler_is_swallowed_in_production(self, capsys):
+        set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
+        logger, _ = configure_and_capture(capsys, service="s", environment="prod")
+        try:
+            raise ValueError("x")
+        except ValueError:
+            logger.error("failed", exc_info=True)
+        assert last_line(capsys)["trace_handler_error"] is True
