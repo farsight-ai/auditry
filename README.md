@@ -410,7 +410,6 @@ correlation ID, and nothing else:
 {
   "level": "ERROR",
   "error_type": "ValueError",
-  "exception_type": "ValueError",
   "correlation_id": "abc-123",
   "message": "Request failed: POST /workflows"
 }
@@ -422,22 +421,30 @@ reading the exception text off the error line.
 Three escape hatches, in increasing order of exposure:
 
 ```python
-# 1. Route full tracebacks to a destination you control the access to.
+# 1. Route full exception details to a destination you control the access to.
 import logging
+import traceback
 
 from auditry import set_trace_handler
 
-# A dedicated logger with its OWN handler, shipping to an encrypted,
+# An error tracker gets the live exception object:
+set_trace_handler(
+    lambda error_type, exc_info, event_dict: sentry_sdk.capture_exception(exc_info[1])
+)
+
+# Or a dedicated logger with its OWN handler, shipping to an encrypted,
 # access-controlled destination. propagate=False keeps it off the root
 # handler — never write traces back to stdout; that defeats the point.
 secure_logger = logging.getLogger("app.secure-traces")
 secure_logger.propagate = False
 secure_logger.addHandler(logging.FileHandler("/var/log/secure/traces.log"))
 
-def route_to_secure_log(error_type, traceback_text, event_dict):
+def route_to_secure_log(error_type, exc_info, event_dict):
     secure_logger.error(
         "%s correlation_id=%s\n%s",
-        error_type, event_dict.get("correlation_id"), traceback_text,
+        error_type,
+        event_dict.get("correlation_id"),
+        "".join(traceback.format_exception(*exc_info)),
     )
 
 set_trace_handler(route_to_secure_log)
@@ -448,12 +455,18 @@ without auditry needing to know anything about that destination — a
 restricted-access log group, an error tracker, whatever you use. Pass `None` to
 remove the handler.
 
-The handler receives the exception **class name** and a rendered traceback
-**string**, not an `exc_info` tuple — so it can write traces anywhere that
-accepts text, but it cannot re-raise or re-capture the original exception
-object. If the handler itself raises, auditry swallows it and marks the line
-`trace_handler_error: true` rather than letting your logging path break the
-request.
+The handler receives `(error_type, exc_info, event_dict)`: the exception class
+name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
+fields under the root schema (`message`, `correlation_id`, `service`, …). Render
+the tuple to text yourself if you need text. If the handler raises, auditry
+swallows it and marks the line `trace_handler_error: true` rather than letting
+your logging path break the request.
+
+This discipline applies to **auditry's own records** — the middleware's
+request/response lines and anything logged through `get_logger()`. Plain stdlib
+loggers (`logging.getLogger(...)` in your code or a vendor SDK) share the root
+schema but **keep their tracebacks**, in the JSON-escaped `exception` field:
+auditry does not delete the stack trace of every `except` block in your process.
 
 ```python
 # 2. Put exception messages back on the standard stream, per service.
@@ -464,7 +477,9 @@ config = ObservabilityConfig(
 ```
 
 ```python
-# 3. Local development only: inline full tracebacks (flattened to one line).
+# 3. Local development only: inline the full traceback in the `exception`
+#    field (JSON-escaped, so the stream line stays single-line and the value
+#    stays a real, tool-parseable traceback). Read once at configure_logging().
 #    AUDITRY_FULL_TRACEBACKS=true
 ```
 
@@ -606,7 +621,6 @@ config = ObservabilityConfig(
   "message": "Request failed: POST /workflows",
   "request": {...},
   "error_type": "ValueError",
-  "exception_type": "ValueError",
   "execution_duration_ms": 12.34
 }
 ```

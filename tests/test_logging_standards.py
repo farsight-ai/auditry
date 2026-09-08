@@ -8,15 +8,22 @@ import structlog
 from asgi_correlation_id import correlation_id
 
 from auditry import ObservabilityConfig
-from auditry.logging_config import configure_logging, get_logger, set_trace_handler
+from auditry.logging_config import (
+    _set_config_service,
+    configure_logging,
+    get_logger,
+    set_trace_handler,
+)
 
 
 @pytest.fixture(autouse=True)
 def reset():
     correlation_id.set(None)
     set_trace_handler(None)
+    _set_config_service(None)
     yield
     set_trace_handler(None)
+    _set_config_service(None)
     structlog.reset_defaults()
 
 
@@ -90,12 +97,14 @@ class TestErrorDiscipline:
         # the message text must not leak into the standard stream
         assert "customer secret text" not in json.dumps(rec)
 
-    def test_trace_handler_receives_full_trace(self, capsys):
+    def test_trace_handler_receives_live_exc_info(self, capsys):
+        import traceback
+
         received = {}
 
-        def handler(error_type, traceback_text, event_dict):
+        def handler(error_type, exc_info, event_dict):
             received["error_type"] = error_type
-            received["tb"] = traceback_text
+            received["exc_info"] = exc_info
             received["event_dict"] = event_dict
 
         set_trace_handler(handler)
@@ -105,7 +114,12 @@ class TestErrorDiscipline:
         except KeyError:
             logger.error("failed", exc_info=True)
         assert received["error_type"] == "KeyError"
-        assert "gated detail" in received["tb"]
+        # The live (type, value, traceback) tuple — so error trackers can
+        # capture the real exception object, and text is one render away.
+        exc_type, exc_value, tb = received["exc_info"]
+        assert exc_type is KeyError
+        assert isinstance(exc_value, KeyError)
+        assert "gated detail" in "".join(traceback.format_exception(exc_type, exc_value, tb))
         # The snapshot follows the root schema: log text under "message".
         assert received["event_dict"]["message"] == "failed"
         assert "event" not in received["event_dict"]
@@ -130,9 +144,25 @@ class TestErrorDiscipline:
             raise ValueError("dev detail")
         except ValueError:
             logger.error("failed", exc_info=True)
-        rec = last_line(capsys)
+        lines = capsys.readouterr().out.strip().splitlines()
+        assert len(lines) == 1  # the stream line is still single-line ...
+        rec = json.loads(lines[0])
+        # ... but the decoded value is a real, tool-parseable traceback.
+        assert rec["exception"].startswith("Traceback (most recent call last):")
+        assert "\n" in rec["exception"]
         assert "dev detail" in rec["exception"]
-        assert "\n" not in rec["exception"]  # still single-line
+
+    def test_dev_escape_hatch_is_read_at_configure_time(self, capsys, monkeypatch):
+        # Resolved once by configure_logging(), like the service context —
+        # flipping the env var afterwards has no effect until reconfigured.
+        monkeypatch.setenv("AUDITRY_FULL_TRACEBACKS", "true")
+        logger, _ = configure_and_capture(capsys, service="s")
+        monkeypatch.delenv("AUDITRY_FULL_TRACEBACKS")
+        try:
+            raise ValueError("dev detail")
+        except ValueError:
+            logger.error("failed", exc_info=True)
+        assert "dev detail" in last_line(capsys)["exception"]
 
 
 class TestConfigDefaults:
@@ -183,14 +213,62 @@ class TestForeignStdlibRecords:
         assert rec["level"] == "info"
         assert "timestamp" in rec
 
-    def test_foreign_exception_scrubbed_to_error_type(self, capsys):
+    def test_foreign_exception_keeps_traceback(self, capsys):
+        """Error discipline is scoped to auditry's own records. A stdlib
+        logger.exception() in application or vendor code keeps its stack
+        trace — stripping every except block in the process is not
+        auditry's call to make."""
         configure_logging(service="test-svc")
         try:
-            raise ValueError("customer secret in foreign log")
+            raise ValueError("app detail")
         except ValueError:
-            logging.getLogger("some.library").error("it failed", exc_info=True)
+            logging.getLogger("myapp.payments").exception("charge failed")
+        lines = capsys.readouterr().out.strip().splitlines()
+        assert len(lines) == 1  # still one JSON line on the stream
+        rec = json.loads(lines[0])
+        assert rec["message"] == "charge failed"
+        assert rec["exception"].startswith("Traceback (most recent call last):")
+        assert "app detail" in rec["exception"]
+        assert "error_type" not in rec  # that field is auditry's own discipline
+
+
+class TestServiceIdentity:
+    """ObservabilityConfig.service_name is the one source of truth for
+    ``service`` once middleware exists; configure_logging(service=) and
+    SERVICE_NAME are the fallback for processes without middleware."""
+
+    def test_config_wins_over_configure_logging(self, capsys):
+        logger, _ = configure_and_capture(capsys, service="from-configure")
+        _set_config_service("from-config")  # what create_middleware does
+        logger.info("app line")
+        assert last_line(capsys)["service"] == "from-config"
+
+    def test_config_survives_configure_logging_called_afterwards(self, capsys):
+        # create_middleware before configure_logging must not be wiped by the
+        # latter's context reset.
+        _set_config_service("from-config")
+        logger, _ = configure_and_capture(capsys, service="from-configure")
+        logger.info("app line")
+        assert last_line(capsys)["service"] == "from-config"
+
+    def test_foreign_records_use_the_same_identity(self, capsys):
+        configure_logging(service="from-configure")
+        _set_config_service("from-config")
+        logging.getLogger("some.library").info("vendor line")
+        assert last_line(capsys)["service"] == "from-config"
+
+    def test_fallback_without_middleware(self, capsys):
+        logger, _ = configure_and_capture(capsys, service="worker-svc")
+        logger.info("worker line")
+        assert last_line(capsys)["service"] == "worker-svc"
+
+    def test_version_and_environment_still_come_from_configure_logging(self, capsys):
+        logger, _ = configure_and_capture(
+            capsys, service="x", version="9.9.9", environment="stage"
+        )
+        _set_config_service("from-config")
+        logger.info("line")
         rec = last_line(capsys)
-        assert rec["error_type"] == "ValueError"
-        raw = json.dumps(rec)
-        assert "customer secret" not in raw
-        assert "Traceback" not in raw
+        assert rec["service"] == "from-config"
+        assert rec["version"] == "9.9.9"
+        assert rec["environment"] == "stage"
