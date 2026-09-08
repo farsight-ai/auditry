@@ -1,10 +1,6 @@
 from typing import Any, Dict, List, Set
 
 
-# The maintained credential/secret redaction list. Any new credential or
-# token type should be added here or excluded from persistence entirely.
-# "token" partial-matches access_token/refresh_token/id_token/session_token
-# etc.; entries below are kept explicit anyway so the list documents intent.
 DEFAULT_REDACTION_PATTERNS: List[str] = [
     "password",
     "passwd",

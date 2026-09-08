@@ -12,10 +12,7 @@ from src.auditry.quart import create_middleware as create_quart_middleware
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
 
 
-# Route structlog through the stdlib so caplog can capture the middleware's
-# request/response records (without this, structlog's default PrintLogger
-# writes straight to stdout and caplog sees nothing). Per-test, because other
-# test modules reset structlog defaults on teardown.
+# caplog only sees the middleware's records once structlog routes through stdlib.
 @pytest.fixture(autouse=True)
 def _configured_logging():
     configure_logging(level="INFO")
