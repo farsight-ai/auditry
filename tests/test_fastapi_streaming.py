@@ -283,10 +283,7 @@ def test_non_excluded_streaming_does_not_wedge_event_loop():
 
 
 def test_request_id_header_appears_exactly_once():
-    """CorrelationIdMiddleware owns the response header; the observability
-    middleware must not add a second copy (regular, streaming, and excluded
-    paths alike)."""
-    from fastapi.testclient import TestClient
+    """Exactly one X-Request-ID on regular, streaming, and excluded responses."""
 
     app = FastAPI()
     config = ObservabilityConfig(
