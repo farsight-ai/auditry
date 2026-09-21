@@ -23,10 +23,12 @@ def reset(monkeypatch):
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("AUDITRY_STRICT", raising=False)
     correlation_id.set(None)
+    structlog.contextvars.clear_contextvars()
     set_trace_handler(None)
     _set_config_service(None)
     _set_strict(False)
     yield
+    structlog.contextvars.clear_contextvars()
     set_trace_handler(None)
     _set_config_service(None)
     _set_strict(False)
@@ -344,3 +346,33 @@ class TestStrictPolicy:
         except ValueError:
             logger.error("failed", exc_info=True)
         assert last_line(capsys)["trace_handler_error"] is True
+
+
+class TestBodiesStaySingleLine:
+    """A body containing newlines must never split a log record across stream
+    lines (CloudWatch treats each line as an event). JSON encoding escapes
+    them; the decoded value keeps the original text."""
+
+    def test_request_and_response_bodies_with_newlines(self, capsys):
+        from auditry.core.logger import RequestResponseLogger
+
+        configure_and_capture(capsys, service="s")
+        cfg = ObservabilityConfig(
+            service_name="s", log_request_body=True, log_response_body=True
+        )
+        rrl = RequestResponseLogger(cfg)
+        req = rrl.prepare_request_data(
+            {"method": "POST", "path": "/x",
+             "body": json.dumps({"note": "line1\nline2"}).encode()},
+            correlation_id="cid",
+        )
+        resp = rrl.prepare_response_data(
+            {"status_code": 200, "body": b"plain\nsecond line\r\nthird"}
+        )
+        rrl.log_success(req, resp, 1.0, correlation_id="cid")
+
+        out = capsys.readouterr().out
+        assert len(out.strip().splitlines()) == 1
+        rec = json.loads(out)
+        assert rec["request"]["body"]["note"] == "line1\nline2"
+        assert rec["response"]["body"] == "plain\nsecond line\r\nthird"
