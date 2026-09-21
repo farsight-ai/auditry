@@ -212,9 +212,6 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         )
         ```
     """
-    # ObservabilityConfig is the source of truth for the whole process: the
-    # service identity on every log line, and the header name that
-    # outbound_headers() uses so outbound calls match the inbound header.
     _set_config_service(config.service_name)
     _set_correlation_header(config.correlation_id_header)
 
