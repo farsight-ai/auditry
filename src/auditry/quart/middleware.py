@@ -211,8 +211,6 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         )
         ```
     """
-    # ObservabilityConfig.service_name is the service identity for every log
-    # line in this process, not just the middleware's own.
     _set_config_service(config.service_name)
 
     # Create and register the middleware
