@@ -5,6 +5,51 @@
 Hardening release: safer defaults for sensitive content, first-class
 correlation propagation outside ASGI, and an EMF metrics helper.
 
+### Upgrading from 0.3.x
+
+Nothing breaks at import or construction time: no exports were removed, no
+signature changed incompatibly, and every new `ObservabilityConfig` field has a
+default. What changes is **what the log lines look like**, so the breakage
+surfaces in the tooling that reads them, not in the service.
+
+Breaking for consumers of the logs:
+
+1. **`event` → `message`.** Any saved Logs Insights query, metric filter, or
+   dashboard referencing `event` stops matching — and metric-filter alarms fail
+   *silently* (a filter that matches nothing looks like a healthy service).
+   Audit metric filters before upgrading a service with alarms on log patterns.
+2. **Error lines carry `error_type` + correlation ID only.** No traceback, no
+   `exception_message`, and `exception_type` is removed (it duplicated
+   `error_type`; move dashboards keyed on it). The human-readable message no
+   longer embeds the class name. Applies to auditry's own records only —
+   stdlib loggers in application or vendor code keep their tracebacks. A
+   registered trace handler receives the live `exc_info` tuple, not text.
+3. **Health-probe requests are no longer logged.** Log-derived request counts
+   drop, sometimes sharply; check any low-log-volume alarm before rollout.
+4. **Query parameters are now redacted**, along with 14 additional field
+   patterns (`signature`, `credential`, …) that now read `[REDACTED]`.
+5. **Timestamps are explicitly UTC** (previously the container's local time)
+   and stdlib logging is explicitly on **stdout** (`basicConfig` defaulted to
+   stderr). No-ops under the awslogs driver; they matter if anything downstream
+   separates the streams or parses local timestamps.
+6. **A `DeprecationWarning` fires on `ObservabilityConfig` construction** when
+   `log_request_body` / `log_response_body` are left implicit. A test suite
+   running `-W error` / `filterwarnings = ["error"]` fails until they are set.
+
+Steps:
+
+1. Pass `service` / `version` / `environment` to `configure_logging()` (or set
+   `SERVICE_NAME` / `SERVICE_VERSION` / `ENVIRONMENT`) — in worker entrypoints
+   too. `environment` also decides strict mode (see *Added*).
+2. Set `log_request_body` / `log_response_body` explicitly; services handling
+   customer content choose `False`.
+3. Update saved Logs Insights queries and metric filters: `event` → `message`,
+   `exception_type` → `error_type`.
+4. In workers, bind a correlation ID before the first log line and add
+   `outbound_headers()` to outbound calls.
+5. Decide on tracebacks: register `set_trace_handler(...)` to route them to a
+   gated destination, or accept `error_type` only.
+
 ### Added
 
 - `configure_logging(service=..., version=..., environment=...)` (or
