@@ -27,7 +27,8 @@ import logging
 import os
 import sys
 from types import TracebackType
-from typing import Any, Callable, Dict, MutableMapping, Optional, Tuple, Type
+from typing import Any, Callable, Optional
+from collections.abc import MutableMapping
 
 import structlog
 from asgi_correlation_id import correlation_id
@@ -37,71 +38,24 @@ from asgi_correlation_id import correlation_id
 # lines stay self-describing when several services share a log destination.
 # ---------------------------------------------------------------------------
 
-_service_context: Dict[str, str] = {}
+_service_context: dict[str, str] = {}
 
-# The service identity from ObservabilityConfig.service_name, seeded by
-# create_middleware(). It is the source of truth for ``service`` whenever
-# middleware is present; ``configure_logging(service=)`` / SERVICE_NAME are
-# the fallback for processes without middleware (workers, scripts). Kept
-# separate from _service_context so it survives configure_logging() being
-# called in either order relative to create_middleware().
 _config_service: Optional[str] = None
 
 # Resolved once by configure_logging(), not per record.
 _full_tracebacks: bool = False
 _FULL_TRACEBACKS_ENV = "AUDITRY_FULL_TRACEBACKS"
 
-ExcInfo = Tuple[Type[BaseException], BaseException, Optional[TracebackType]]
-TraceHandler = Callable[[str, ExcInfo, Dict[str, Any]], None]
+ExcInfo = tuple[type[BaseException], BaseException, Optional[TracebackType]]
+TraceHandler = Callable[[str, ExcInfo, dict[str, Any]], None]
 
-# Handler for full tracebacks. Signature: (error_type, exc_info, event_dict)
-# -> None. Register with set_trace_handler(). The handler is responsible for
-# routing to a gated surface — typically a dedicated logger whose stream
-# ships to an encrypted, access-controlled destination, or an error tracker
-# — and MUST NOT write back to the standard stdout stream.
 _trace_handler: Optional[TraceHandler] = None
 
 
 def set_trace_handler(handler: Optional[TraceHandler]) -> None:
-    """
-    Register a handler that receives full exception details.
-
-    By default auditry never serializes tracebacks or exception messages onto
-    the standard log stream, because they can interpolate sensitive
-    user-supplied content (request payloads, document text, PII). Services
-    that need full traces must route them to a gated destination.
-
-    The handler receives ``(error_type, exc_info, event_dict)``: the exception
-    class name, the live ``(type, value, traceback)`` tuple, and a snapshot of
-    the log line's fields (root schema — the log text is under ``message``,
-    alongside ``correlation_id``, ``service``, etc.). Passing the tuple rather
-    than rendered text means error trackers work directly:
-
-    ```python
-    from auditry import set_trace_handler
-
-    # An error tracker gets the real exception object:
-    set_trace_handler(
-        lambda error_type, exc_info, event_dict: sentry_sdk.capture_exception(exc_info[1])
-    )
-
-    # A gated log destination renders text itself:
-    import traceback
-
-    def route_to_secure_log(error_type, exc_info, event_dict):
-        # e.g. a dedicated stdlib logger whose output ships to an
-        # encrypted, access-controlled log group — never back to stdout.
-        secure_logger.error(
-            "%s correlation_id=%s\\n%s",
-            error_type,
-            event_dict.get("correlation_id"),
-            "".join(traceback.format_exception(*exc_info)),
-        )
-
-    set_trace_handler(route_to_secure_log)
-    ```
-
-    Pass ``None`` to remove the handler.
+    """Receive ``(error_type, exc_info, event_dict)`` for every exception auditry
+    keeps off the standard stream. The handler must route to a gated
+    destination and never write back to stdout. ``None`` removes it.
     """
     global _trace_handler
     _trace_handler = handler
@@ -113,10 +67,6 @@ def get_trace_handler() -> Optional[TraceHandler]:
 
 
 def _set_config_service(service_name: Optional[str]) -> None:
-    """Seed the service identity from ObservabilityConfig (called by
-    create_middleware). Overrides configure_logging(service=) / SERVICE_NAME
-    so one process never emits two different ``service`` values. ``None``
-    clears it (tests)."""
     global _config_service
     _config_service = service_name
 
@@ -130,8 +80,11 @@ def _add_service_context(
 ) -> MutableMapping[str, Any]:
     """Stamp service/version/environment onto every line.
 
-    ``service`` comes from ObservabilityConfig.service_name when middleware
-    has been created, else from configure_logging(service=) / SERVICE_NAME.
+    ``service`` is ObservabilityConfig.service_name when create_middleware()
+    has run, else configure_logging(service=) / SERVICE_NAME — so one process
+    never emits two different values. _config_service lives outside
+    _service_context so configure_logging() (which clears the context) and
+    create_middleware() can run in either order.
     """
     service = _config_service or _service_context.get("service")
     if service:
@@ -236,9 +189,7 @@ def configure_logging(
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
             DEBUG should be off in production.
-        service: Service name; falls back to the SERVICE_NAME env var. When
-            middleware is created, ObservabilityConfig.service_name takes
-            precedence over both.
+        service: Service name; falls back to the SERVICE_NAME env var.
         version: Service version; falls back to SERVICE_VERSION.
         environment: Deployment environment; falls back to ENVIRONMENT.
     """
