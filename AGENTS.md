@@ -19,13 +19,15 @@ When referencing built-in language functions or package APIs, always include a m
 ## Guidelines when writing code
 * Code should be modular, compartmentalized, and reusable
 * DRY: don't repeat yourself
+* Prefer self-documenting code. Where behavior is nuanced or non-obvious, comment it once, in the place a reader will be standing when they need it, that is colocated with the code, not in a file-level docstring. Never narrate changes (example of bad comments: "now uses X instead of Y", "previously did Z"); describe only current behavior (example of good comment: "normalizes a field name and checks against an exclusion list"). If the README already explains it, link or reference and don't keep a second copy in sync. For breaking changes add a change log.
 * Look up documentation if you're unfamiliar with the requested feature; you have tools like web search.
 * Don't guess about unknown functionality; if you don't know how something works, look it up or ask for clarification.
 * Do not use fancy characters like em/en dashes, curly quotes, or arrows in print/log lines, titles, descriptions, etc. unless specifically told to. em dash is ---. en dash is --.
+  - Unless otherwise instructed, do not correct existing fancy characters
 
 ### Python guidelines
 * Python code should conform to [PEP8](https://peps.python.org/pep-0008/) style guide
-* Python's `__init__.py` files should be empty. Treat them all as modules, and place a 0-byte `__init__.py` file in every python subdirectory
+* Python's `__init__.py` files should hold only public re-exports and no logic
 * DO NOT USE RESERVED KEYWORDS FOR VARIABLE, FUNCTION/METHOD, SCHEMA, DATABASE, TABLE, OR COLUMN NAMES
 
 ### Shell guidelines
