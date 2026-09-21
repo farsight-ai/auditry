@@ -682,11 +682,15 @@ do. Each takes `--help`.
 ./scripts/bootstrap.sh
 ```
 
-This provisions everything on macOS: the Xcode command line tools, Homebrew and
-the CPython build dependencies, `pyenv`, the interpreter pinned in
-`.python-version`, `uv`, a `.venv` built from that interpreter, and every
-dependency resolved from `uv.lock`. Every step checks before it installs, so
-re-running only does the work that is actually missing.
+This provisions everything on macOS: the Xcode command line tools, the CPython
+build dependencies, `pyenv`, the interpreter pinned in `.python-version`, `uv`,
+a `.venv` built from that interpreter, and every dependency resolved from
+`uv.lock`. Every step checks before it installs, so re-running only does the
+work that is actually missing.
+
+Homebrew is the one prerequisite it will not install for you -- its installer
+is interactive and wants `sudo`. If `brew` is missing, the script stops and
+prints the command to install it.
 
 ```bash
 ./scripts/bootstrap.sh --no-shell-init   # do not touch ~/.zshrc
@@ -716,8 +720,13 @@ usable, and otherwise passes pytest's own exit code through.
 
 ### Linting and formatting
 
-Ruff is the only linter and the only formatter. Both run from one script, lint
-first so a syntax-level problem is never reported as a formatting one.
+One script covers both languages. Within each, lint runs before the format
+check, so a syntax-level problem is never reported as a formatting one.
+
+| Language | Lint | Format |
+|---|---|---|
+| Python | `ruff check` | `ruff format` |
+| Shell | `shellcheck` | `shfmt` |
 
 ```bash
 ./scripts/lintme.sh             # apply autofixes, then format in place
@@ -725,20 +734,28 @@ first so a syntax-level problem is never reported as a formatting one.
 ./scripts/lintme.sh --unsafe-fixes
 ```
 
-The configuration lives in `pyproject.toml` under `[tool.ruff]`, and the ruff
-version is pinned in the `dev` extra so your results match CI's. Markdown is
-excluded from the formatter: it rewrites Python code blocks inside `.md` files,
-and the examples in this README are spaced and annotated by hand.
+Every linter comes out of `.venv`, installed from `uv.lock` like any other
+dependency — `shellcheck` and `shfmt` are binaries, but the `shellcheck-py` and
+`shfmt-py` wheels carry them, so there is one install path and one pinned
+version per tool rather than Homebrew locally and `apt` in CI. A missing linter
+exits 3 rather than being skipped: a check that did not run must never read as
+clean.
+
+Ruff's configuration lives in `pyproject.toml` under `[tool.ruff]`. Markdown is
+excluded from its formatter, which rewrites Python code blocks inside `.md`
+files — the examples in this README are spaced and annotated by hand. Shell
+formatting is `shfmt -i 4 -ci -bn`, and `shellcheck` covers every `*.sh` in the
+repository, not only `scripts/`.
 
 ### Continuous integration
 
 Two workflows run on every pull request, drafts included, and again when a draft
 is marked ready for review:
 
-| Check | Runs |
-|---|---|
-| `Lint` | `./scripts/lintme.sh --check` |
-| `Tests` | `./scripts/runtests.sh` |
+| Check | Runs | Covers |
+|---|---|---|
+| `Lint` | `./scripts/lintme.sh --check` | ruff, shellcheck, shfmt |
+| `Tests` | `./scripts/runtests.sh` | pytest |
 
 Both install with `uv sync --all-extras --locked`, which fails if `uv.lock` has
 drifted from `pyproject.toml` — so re-lock with `uv lock` whenever you change a

@@ -39,7 +39,7 @@ PYTHON_BIN=""
 # ---------------------------------------------------------------------------
 
 step() { printf '\n==> %s\n' "$*"; }
-ok()   { printf '    ok: %s\n' "$*"; }
+ok() { printf '    ok: %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 
 # Exit 3 is reserved for "the environment is not usable", so a broken venv is

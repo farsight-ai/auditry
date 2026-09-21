@@ -6,6 +6,8 @@
 # resolved by uv from the committed uv.lock. Every step checks for what it
 # needs before it installs anything, so this script is safe to re-run.
 #
+# Homebrew is the one prerequisite: install it yourself before running this.
+#
 # Usage:
 #   ./scripts/bootstrap.sh                   full bootstrap
 #   ./scripts/bootstrap.sh --no-shell-init   leave ~/.zshrc untouched
@@ -57,11 +59,14 @@ PYTHON_BIN=""
 # ---------------------------------------------------------------------------
 
 step() { printf '\n==> %s\n' "$*"; }
-ok()   { printf '    ok: %s\n' "$*"; }
-act()  { printf '    installing: %s\n' "$*"; }
+ok() { printf '    ok: %s\n' "$*"; }
+act() { printf '    installing: %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '    warning: %s\n' "$*" >&2; }
-die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
+die() {
+    printf '\nerror: %s\n' "$*" >&2
+    exit 1
+}
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -74,9 +79,12 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --no-shell-init) DO_SHELL_INIT=0 ;;
-            --run-tests)     RUN_TESTS=1 ;;
-            -h|--help)       usage; exit 0 ;;
-            *)               die "unknown option: $1 (try --help)" ;;
+            --run-tests) RUN_TESTS=1 ;;
+            -h | --help)
+                usage
+                exit 0
+                ;;
+            *) die "unknown option: $1 (try --help)" ;;
         esac
         shift
     done
@@ -117,18 +125,10 @@ ensure_homebrew() {
         ok "$(brew_version)"
         return
     fi
-    act "Homebrew"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # The installer does not touch the PATH of the shell that invoked it.
-    local prefix
-    for prefix in /opt/homebrew /usr/local; do
-        if [ -x "${prefix}/bin/brew" ]; then
-            eval "$("${prefix}/bin/brew" shellenv)"
-            break
-        fi
-    done
-    have brew || die "Homebrew installed but 'brew' is still not on PATH"
-    ok "$(brew_version)"
+    # Homebrew's installer is interactive and wants sudo, so it is the one
+    # prerequisite this script asks you to install rather than installing itself.
+    die "Homebrew not found. Install it, then re-run this script:
+    /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
 }
 
 # Install a single Homebrew formula only when it is not already present.
@@ -156,7 +156,10 @@ ensure_build_deps() {
 
 ensure_pyenv() {
     step "Checking pyenv"
-    have pyenv || { act "pyenv"; brew install pyenv; }
+    have pyenv || {
+        act "pyenv"
+        brew install pyenv
+    }
 
     export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
     [ -d "${PYENV_ROOT}/bin" ] && export PATH="${PYENV_ROOT}/bin:${PATH}"
@@ -194,7 +197,7 @@ ensure_shell_init() {
         printf 'export PYENV_ROOT="$HOME/.pyenv"\n'
         printf '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"\n'
         printf 'eval "$(pyenv init - zsh)"\n'
-    } >> "$rc"
+    } >>"$rc"
     info "open a new shell, or run: source ${rc}"
 }
 
@@ -205,7 +208,7 @@ resolve_python_version() {
         PYTHON_VERSION="$AUDITRY_PYTHON_VERSION"
         info "from AUDITRY_PYTHON_VERSION"
     elif [ -f "$PIN_FILE" ]; then
-        PYTHON_VERSION="$(tr -d '[:space:]' < "$PIN_FILE")"
+        PYTHON_VERSION="$(tr -d '[:space:]' <"$PIN_FILE")"
         info "from existing ${PIN_FILE##*/}"
     else
         PYTHON_VERSION="$DEFAULT_PYTHON_VERSION"
@@ -223,7 +226,7 @@ ensure_python_version() {
     # a version that is already present. -F keeps the dots literal.
     local installed
     installed="$(pyenv versions --bare --skip-aliases)"
-    if grep -qxF "$PYTHON_VERSION" <<< "$installed"; then
+    if grep -qxF "$PYTHON_VERSION" <<<"$installed"; then
         ok "already installed"
     else
         act "CPython ${PYTHON_VERSION} (built from source, this takes a few minutes)"
@@ -239,12 +242,12 @@ ensure_python_version() {
 
 ensure_python_pin() {
     step "Checking repository Python pin"
-    if [ -f "$PIN_FILE" ] && [ "$(tr -d '[:space:]' < "$PIN_FILE")" = "$PYTHON_VERSION" ]; then
+    if [ -f "$PIN_FILE" ] && [ "$(tr -d '[:space:]' <"$PIN_FILE")" = "$PYTHON_VERSION" ]; then
         ok "${PIN_FILE##*/} already pins ${PYTHON_VERSION}"
         return
     fi
     act "${PIN_FILE##*/} -> ${PYTHON_VERSION}"
-    ( cd "$REPO_ROOT" && pyenv local "$PYTHON_VERSION" )
+    (cd "$REPO_ROOT" && pyenv local "$PYTHON_VERSION")
 }
 
 # ---------------------------------------------------------------------------
@@ -288,7 +291,7 @@ sync_dependencies() {
     before="$(shasum -a 256 "$LOCK_FILE" | awk '{print $1}')"
 
     # --all-extras covers fastapi, quart, all, and dev from pyproject.toml.
-    ( cd "$REPO_ROOT" && uv sync --all-extras --python "$PYTHON_BIN" --no-python-downloads )
+    (cd "$REPO_ROOT" && uv sync --all-extras --python "$PYTHON_BIN" --no-python-downloads)
 
     after="$(shasum -a 256 "$LOCK_FILE" | awk '{print $1}')"
     if [ "$before" != "$after" ]; then
@@ -324,7 +327,7 @@ verify_install() {
     ok "auditry ${version} imports cleanly"
 
     local tool
-    for tool in pytest ruff mypy; do
+    for tool in pytest ruff mypy shellcheck shfmt; do
         if [ -x "${VENV_DIR}/bin/${tool}" ]; then
             ok "${tool} available"
         else

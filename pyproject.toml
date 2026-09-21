@@ -52,6 +52,12 @@ dev = [
     # agree on what counts as a violation. Bump here and the workflows follow,
     # because they install ruff from this lock rather than from a second pin.
     "ruff==0.16.1",
+    # The shell toolchain, for scripts/. Both are binaries rather than Python,
+    # but these wheels carry them, which keeps one install path (uv.lock) and
+    # one pinned version shared by CI and every developer -- as opposed to
+    # Homebrew locally and apt in CI, which drift.
+    "shellcheck-py==0.11.0.1",
+    "shfmt-py==4.2.0",
 ]
 
 [project.urls]
