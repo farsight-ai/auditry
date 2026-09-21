@@ -19,9 +19,11 @@ from auditry.logging_config import (
 @pytest.fixture(autouse=True)
 def reset():
     correlation_id.set(None)
+    structlog.contextvars.clear_contextvars()
     set_trace_handler(None)
     _set_config_service(None)
     yield
+    structlog.contextvars.clear_contextvars()
     set_trace_handler(None)
     _set_config_service(None)
     structlog.reset_defaults()
