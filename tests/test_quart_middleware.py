@@ -29,7 +29,7 @@ async def test_correlation_id_in_response():
     client = app.test_client()
     response = await client.get("/test")
     assert response.status_code == 200
-    assert "X-Correlation-ID" in response.headers
+    assert len(response.headers.getlist("X-Request-ID")) == 1
 
 
 @pytest.mark.asyncio

@@ -75,7 +75,9 @@ class RequestResponseLogger:
 
         # Add query params if configured
         if self.config.log_query_params and raw_data.get("query_params"):
-            prepared["query_params"] = raw_data["query_params"]
+            prepared["query_params"] = redact_data(
+                raw_data["query_params"], self.additional_redaction_patterns
+            )
 
         # Add path params (always included if present)
         if raw_data.get("path_params"):

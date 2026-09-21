@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Set
 
 DEFAULT_REDACTION_PATTERNS: List[str] = [
     "password",
+    "passwd",
     "token",
     "api_key",
     "apikey",
@@ -15,6 +16,19 @@ DEFAULT_REDACTION_PATTERNS: List[str] = [
     "x-api-key",
     "cookie",
     "set-cookie",
+    "jwt",
+    "bearer",
+    "otp",
+    "one_time_password",
+    "access_key",
+    "private_key",
+    "signature",
+    "credential",
+    "x-auth",
+    "x-amz-security-token",
+    "proxy-authorization",
+    "csrf",
+    "xsrf",
 ]
 
 REDACTED_VALUE = "[REDACTED]"

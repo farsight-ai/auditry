@@ -7,9 +7,15 @@ from unittest.mock import patch
 from quart import Quart, Response, stream_with_context
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from src.auditry import ObservabilityConfig
+from src.auditry import ObservabilityConfig, configure_logging
 from src.auditry.quart import create_middleware as create_quart_middleware
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
+
+
+# caplog only sees the middleware's records once structlog routes through stdlib.
+@pytest.fixture(autouse=True)
+def _configured_logging():
+    configure_logging(level="INFO")
 
 
 # ================= Quart Tests =================
@@ -99,7 +105,7 @@ async def test_quart_exclusion(quart_app_with_exclusions, caplog):
     assert response.status_code == 200
 
     # Should have correlation ID even though excluded
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
     # Should not have any logs for this request
     request_logs = [r for r in caplog.records if "Request completed" in r.getMessage()]
@@ -115,7 +121,7 @@ async def test_quart_patterns(quart_app_with_exclusions, caplog):
     # wildcard test
     response = await client.get("/stream")
     assert response.status_code == 200
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
     assert len([r for r in caplog.records if "Request completed" in r.getMessage()]) == 0
 
     # normal path should log
@@ -209,7 +215,7 @@ async def test_fastapi_excluded_path_not_logged(fastapi_app_with_exclusions, cap
     assert response.status_code == 200
 
     # Should have correlation ID even though excluded
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
     # Should not have logs for this request
     request_logs = [r for r in caplog.records if "Request completed" in r.getMessage()]
@@ -227,7 +233,7 @@ async def test_fastapi_streaming_exclusion(fastapi_app_with_exclusions, caplog):
     # Test excluded streaming endpoint
     response = client.get("/stream")
     assert response.status_code == 200
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
     # Should not have logs for this request
     request_logs = [r for r in caplog.records if "Request completed" in r.getMessage()]
@@ -245,7 +251,7 @@ async def test_fastapi_non_excluded_path_is_logged(fastapi_app_with_exclusions, 
     # Test non-excluded endpoint
     response = client.get("/api/users")
     assert response.status_code == 200
-    assert "X-Correlation-Id" in response.headers
+    assert "X-Request-ID" in response.headers
 
     # Should have logs for this request
     request_logs = [r for r in caplog.records if "Request completed" in r.getMessage()]
