@@ -35,15 +35,31 @@ from fastapi import FastAPI
 from auditry import configure_logging, ObservabilityConfig, get_logger
 from auditry.fastapi import create_middleware
 
-# Configure structured logging at startup
-configure_logging(level="INFO")
+# Configure structured logging at startup.
+# service/version/environment are stamped on every line — pass them here or set
+# SERVICE_NAME / SERVICE_VERSION / ENVIRONMENT.
+configure_logging(
+    level="INFO",
+    service="my-service",
+    version="1.0.0",
+    environment="prod",
+)
 
 app = FastAPI()
 
 # Add observability middleware (single line!)
 app = create_middleware(
     app,
-    config=ObservabilityConfig(service_name="my-service")
+    config=ObservabilityConfig(
+        service_name="my-service",
+        # Set these explicitly — the implicit default is deprecated and will
+        # flip to False. False is the safe choice: request/response bodies
+        # are user-supplied content that field-name redaction cannot
+        # reliably scrub. Opt in deliberately, per service, only when you
+        # know the bodies are safe to persist.
+        log_request_body=False,
+        log_response_body=False,
+    ),
 )
 
 logger = get_logger(__name__)
@@ -62,14 +78,23 @@ from auditry import configure_logging, ObservabilityConfig, get_logger
 from auditry.quart import create_middleware
 
 # Configure structured logging at startup
-configure_logging(level="INFO")
+configure_logging(
+    level="INFO",
+    service="my-service",
+    version="1.0.0",
+    environment="prod",
+)
 
 app = Quart(__name__)
 
 # Add observability middleware (single line!)
 app = create_middleware(
     app,
-    config=ObservabilityConfig(service_name="my-service")
+    config=ObservabilityConfig(
+        service_name="my-service",
+        log_request_body=False,   # set explicitly; False is the safe choice
+        log_response_body=False,
+    ),
 )
 
 logger = get_logger(__name__)
@@ -370,6 +395,94 @@ config = ObservabilityConfig(
 
 When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead of the actual content, while still logging metadata like headers, status codes, and timing information.
 
+### Exception Details
+
+Error logs are the single most likely place for customer content to leak.
+Exception messages routinely interpolate exactly the input that caused the
+failure — a parse error quotes the document, a validation error quotes the field
+value, an SDK error quotes the payload. Redaction cannot help, because a
+traceback has no field names to match.
+
+So as of 0.4.0, a failed request logs the exception **class** and the
+correlation ID, and nothing else:
+
+```json
+{
+  "level": "ERROR",
+  "error_type": "ValueError",
+  "correlation_id": "abc-123",
+  "message": "Request failed: POST /workflows"
+}
+```
+
+You debug by taking the correlation ID and searching your logs, rather than by
+reading the exception text off the error line.
+
+Three escape hatches, in increasing order of exposure:
+
+```python
+# 1. Route full exception details to a destination you control the access to.
+import logging
+import traceback
+
+from auditry import set_trace_handler
+
+# An error tracker gets the live exception object:
+set_trace_handler(
+    lambda error_type, exc_info, event_dict: sentry_sdk.capture_exception(exc_info[1])
+)
+
+# Or a dedicated logger with its OWN handler, shipping to an encrypted,
+# access-controlled destination. propagate=False keeps it off the root
+# handler — never write traces back to stdout; that defeats the point.
+secure_logger = logging.getLogger("app.secure-traces")
+secure_logger.propagate = False
+secure_logger.addHandler(logging.FileHandler("/var/log/secure/traces.log"))
+
+def route_to_secure_log(error_type, exc_info, event_dict):
+    secure_logger.error(
+        "%s correlation_id=%s\n%s",
+        error_type,
+        event_dict.get("correlation_id"),
+        "".join(traceback.format_exception(*exc_info)),
+    )
+
+set_trace_handler(route_to_secure_log)
+```
+
+`set_trace_handler` is the seam that lets traces go somewhere access-controlled
+without auditry needing to know anything about that destination — a
+restricted-access log group, an error tracker, whatever you use. Pass `None` to
+remove the handler.
+
+The handler receives `(error_type, exc_info, event_dict)`: the exception class
+name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
+fields under the root schema (`message`, `correlation_id`, `service`, …). Render
+the tuple to text yourself if you need text. If the handler raises, auditry
+swallows it and marks the line `trace_handler_error: true` rather than letting
+your logging path break the request.
+
+This discipline applies to **auditry's own records** — the middleware's
+request/response lines and anything logged through `get_logger()`. Plain stdlib
+loggers (`logging.getLogger(...)` in your code or a vendor SDK) share the root
+schema but **keep their tracebacks**, in the JSON-escaped `exception` field:
+auditry does not delete the stack trace of every `except` block in your process.
+
+```python
+# 2. Put exception messages back on the standard stream, per service.
+config = ObservabilityConfig(
+    service_name="my-service",
+    log_exception_messages=True,   # default False
+)
+```
+
+```python
+# 3. Local development only: inline the full traceback in the `exception`
+#    field (JSON-escaped, so the stream line stays single-line and the value
+#    stays a real, tool-parseable traceback). Read once at configure_logging().
+#    AUDITRY_FULL_TRACEBACKS=true
+```
+
 ### Excluding Paths
 
 Skip logging for specific endpoints like health checks or streaming:
@@ -502,14 +615,19 @@ config = ObservabilityConfig(
 {
   "level": "ERROR",
   "service": "my-service-name",
+  "version": "1.4.2",
+  "environment": "prod",
   "correlation_id": "abc-123",
-  "message": "Request failed: POST /workflows - Error: ValueError: Invalid name",
+  "message": "Request failed: POST /workflows",
   "request": {...},
-  "exception_type": "ValueError",
-  "exception_message": "Invalid name",
+  "error_type": "ValueError",
   "execution_duration_ms": 12.34
 }
 ```
+
+Note what is *not* there: no traceback, and no `exception_message`. See
+[Exception Details](#exception-details) for why, and for how to get them back
+when you need them.
 
 ## Migration Guide: 0.2.x to 0.3.0
 
