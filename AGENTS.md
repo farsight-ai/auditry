@@ -32,7 +32,7 @@ When referencing built-in language functions or package APIs, always include a m
 
 ### Shell guidelines
 * Shell scripts must be `#!/bin/bash` unless otherwise instructed
-* Shell scripts must have 744 file mode unless otherwise instructed
+* Shell scripts must have 755 file mode unless otherwise instructed
 
 ### Linting
 Run `./scripts/lintme.sh`
