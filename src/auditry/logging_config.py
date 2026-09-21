@@ -26,9 +26,9 @@ This module provides JSON-formatted logging with production-safe defaults:
 import logging
 import os
 import sys
+from collections.abc import MutableMapping
 from types import TracebackType
 from typing import Any, Callable, Optional
-from collections.abc import MutableMapping
 
 import structlog
 from asgi_correlation_id import correlation_id
@@ -74,6 +74,7 @@ def _set_config_service(service_name: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 # structlog processors
 # ---------------------------------------------------------------------------
+
 
 def _add_service_context(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
@@ -171,6 +172,7 @@ def _rename_event_to_message(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def configure_logging(
     level: str = "INFO",

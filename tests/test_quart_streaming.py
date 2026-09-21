@@ -1,7 +1,7 @@
 """Tests for Quart streaming response handling."""
 
 import asyncio
-import json
+
 import pytest
 from quart import Quart, Response, stream_with_context
 from src.auditry import ObservabilityConfig
@@ -24,6 +24,7 @@ def app():
     @app.route("/stream")
     async def streaming_endpoint():
         """Endpoint that returns streaming response."""
+
         @stream_with_context
         async def generate():
             for i in range(3):
@@ -53,6 +54,7 @@ def app_without_middleware():
     @app.route("/stream")
     async def streaming_endpoint():
         """Endpoint that returns streaming response."""
+
         @stream_with_context
         async def generate():
             for i in range(3):
@@ -169,7 +171,7 @@ async def test_multiple_concurrent_streams(app):
 
     # Start multiple streaming requests concurrently
     tasks = []
-    for i in range(5):
+    for _ in range(5):
         tasks.append(client.get("/stream"))
 
     responses = await asyncio.gather(*tasks)
@@ -230,6 +232,7 @@ async def test_mixed_requests(app):
     data = await large_response.get_json()
     assert len(data["data"]) == 1000
 
+
 @pytest.mark.asyncio
 async def test_request_id_header_appears_exactly_once():
     """Exactly one X-Request-ID on regular, streaming, and excluded responses."""
@@ -254,6 +257,7 @@ async def test_request_id_header_appears_exactly_once():
         @stream_with_context
         async def generate():
             yield b"data: x\n\n"
+
         return Response(generate(), 200, mimetype="text/event-stream")
 
     app = create_middleware(app, config)

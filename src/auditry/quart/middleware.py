@@ -1,9 +1,10 @@
 """Quart observability middleware."""
+
 import time
 
+from asgi_correlation_id import CorrelationIdMiddleware
 from quart import Quart, Request, Response, request
 from quart.wrappers.response import IterableBody
-from asgi_correlation_id import CorrelationIdMiddleware
 
 from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
@@ -43,8 +44,8 @@ class QuartMiddleware(BaseMiddleware):
             """Hook for request start."""
             # Early exit for excluded paths
             if should_exclude_path(request.path, request.method, self.config.excluded_paths):
-                setattr(request, 'observability_excluded', True)
-                setattr(request, 'observability_correlation_id', get_correlation_id())
+                request.observability_excluded = True
+                request.observability_correlation_id = get_correlation_id()
                 return
 
             request.observability_start_time = time.time()
@@ -56,8 +57,7 @@ class QuartMiddleware(BaseMiddleware):
             request.observability_raw_data = raw_request_data
 
             request.observability_request_data = self.logger.prepare_request_data(
-                raw_request_data,
-                request.observability_correlation_id
+                raw_request_data, request.observability_correlation_id
             )
 
         @self.app.after_request
@@ -87,9 +87,11 @@ class QuartMiddleware(BaseMiddleware):
                 self.logger.log_success(
                     request_data=request_data,
                     response_data={
-                        "status_code": response.status_code if hasattr(response, "status_code") else 200,
+                        "status_code": response.status_code
+                        if hasattr(response, "status_code")
+                        else 200,
                         "headers": dict(response.headers) if hasattr(response, "headers") else {},
-                        "body": None  # Don't try to extract body for streaming
+                        "body": None,  # Don't try to extract body for streaming
                     },
                     duration_ms=duration_ms,
                     correlation_id=correlation_id,

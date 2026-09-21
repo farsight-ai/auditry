@@ -6,6 +6,28 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
 [![Python Versions](https://img.shields.io/pypi/pyversions/auditry.svg)](https://pypi.org/project/auditry/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Request / Correlation IDs](#request--correlation-ids)
+- [User Tracking](#user-tracking)
+- [Business Event Tagging (For Analytics)](#business-event-tagging-for-analytics)
+- [Log Output](#log-output)
+- [Sensitive Data Handling](#sensitive-data-handling)
+- [Best Practices](#best-practices)
+- [Example Output: Success vs Failure](#example-output-success-vs-failure)
+- [Migration Guide: 0.2.x to 0.3.0](#migration-guide-02x-to-030)
+- [Development](#development)
+  - [Local setup](#local-setup)
+  - [Running tests](#running-tests)
+  - [Linting and formatting](#linting-and-formatting)
+  - [Continuous integration](#continuous-integration)
+- [License](#license)
+- [Contributing](#contributing)
+- [Support](#support)
+
 ## Installation
 
 ### For FastAPI
@@ -649,13 +671,88 @@ when you need them.
 - **Streaming-friendly middleware** — Safer handling of streaming responses so large bodies are not buffered for logging when not appropriate.
 - **`excluded_paths`** — Skip request/response logging for configured paths (for example health checks or long-lived streams) while still attaching the request ID header.
 
+## Development
+
+Three scripts cover the whole local workflow, and CI runs the same two gates you
+do. Each takes `--help`.
+
+### Local setup
+
+```bash
+./scripts/bootstrap.sh
+```
+
+This provisions everything on macOS: the Xcode command line tools, Homebrew and
+the CPython build dependencies, `pyenv`, the interpreter pinned in
+`.python-version`, `uv`, a `.venv` built from that interpreter, and every
+dependency resolved from `uv.lock`. Every step checks before it installs, so
+re-running only does the work that is actually missing.
+
+```bash
+./scripts/bootstrap.sh --no-shell-init   # do not touch ~/.zshrc
+./scripts/bootstrap.sh --run-tests       # also run the suite at the end
+AUDITRY_PYTHON_VERSION=3.11.9 ./scripts/bootstrap.sh
+```
+
+To use the environment directly afterwards, `source .venv/bin/activate`.
+
+### Running tests
+
+```bash
+./scripts/runtests.sh
+```
+
+Any arguments are passed through to pytest:
+
+```bash
+./scripts/runtests.sh -k redaction
+./scripts/runtests.sh -x -vv tests/test_redaction.py
+```
+
+The suite imports `auditry` as an installed package, so the script verifies the
+interpreter and the install before pytest starts rather than letting a missing
+install surface as a collection error. It exits 3 if the environment is not
+usable, and otherwise passes pytest's own exit code through.
+
+### Linting and formatting
+
+Ruff is the only linter and the only formatter. Both run from one script, lint
+first so a syntax-level problem is never reported as a formatting one.
+
+```bash
+./scripts/lintme.sh             # apply autofixes, then format in place
+./scripts/lintme.sh --check     # report only, writes nothing -- what CI runs
+./scripts/lintme.sh --unsafe-fixes
+```
+
+The configuration lives in `pyproject.toml` under `[tool.ruff]`, and the ruff
+version is pinned in the `dev` extra so your results match CI's. Markdown is
+excluded from the formatter: it rewrites Python code blocks inside `.md` files,
+and the examples in this README are spaced and annotated by hand.
+
+### Continuous integration
+
+Two workflows run on every pull request, drafts included, and again when a draft
+is marked ready for review:
+
+| Check | Runs |
+|---|---|
+| `Lint` | `./scripts/lintme.sh --check` |
+| `Tests` | `./scripts/runtests.sh` |
+
+Both install with `uv sync --all-extras --locked`, which fails if `uv.lock` has
+drifted from `pyproject.toml` — so re-lock with `uv lock` whenever you change a
+dependency.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
-Contributions welcome! Please submit a Pull Request.
+Contributions welcome! Please submit a Pull Request. See
+[Development](#development) for setup, tests and linting; a pull request is
+expected to pass `./scripts/lintme.sh --check` and `./scripts/runtests.sh`.
 
 ## Support
 

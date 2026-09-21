@@ -6,7 +6,7 @@ Quart request and response objects.
 """
 
 import json
-from typing import Dict, Optional
+from typing import Optional
 
 from quart import Request, Response, g
 from quart.wrappers.response import IterableBody
@@ -19,7 +19,7 @@ class QuartRequestAdapter(BaseRequestAdapter):
 
     def __init__(self):
         """Initialize the adapter with a body cache for request bodies."""
-        self._body_cache: Dict[int, bytes] = {}
+        self._body_cache: dict[int, bytes] = {}
 
     async def extract_method(self, request: Request) -> str:
         """Extract HTTP method from Quart request."""
@@ -29,15 +29,15 @@ class QuartRequestAdapter(BaseRequestAdapter):
         """Extract URL path from Quart request."""
         return request.path
 
-    async def extract_headers(self, request: Request) -> Dict[str, str]:
+    async def extract_headers(self, request: Request) -> dict[str, str]:
         """Extract headers from Quart request."""
         return dict(request.headers)
 
-    async def extract_query_params(self, request: Request) -> Dict[str, str]:
+    async def extract_query_params(self, request: Request) -> dict[str, str]:
         """Extract query parameters from Quart request."""
         return dict(request.args)
 
-    async def extract_path_params(self, request: Request) -> Dict[str, str]:
+    async def extract_path_params(self, request: Request) -> dict[str, str]:
         """Extract path parameters from Quart request."""
         # Quart stores path params in request.view_args
         if hasattr(request, "view_args") and request.view_args:
@@ -117,7 +117,7 @@ class QuartResponseAdapter(BaseResponseAdapter):
 
         return 200
 
-    async def extract_headers(self, response: Response) -> Dict[str, str]:
+    async def extract_headers(self, response: Response) -> dict[str, str]:
         """Extract headers from Quart response."""
         if hasattr(response, "headers"):
             return dict(response.headers)

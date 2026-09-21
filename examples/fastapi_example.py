@@ -9,19 +9,19 @@ This example demonstrates:
 """
 
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 # Import auditry components
 from auditry import (
-    ObservabilityConfig,
     BusinessEventConfig,
+    ObservabilityConfig,
     configure_logging,
     get_logger,
 )
 from auditry.fastapi import create_middleware
-
 
 # Configure structured logging
 configure_logging(level="INFO")
@@ -84,7 +84,9 @@ security = HTTPBearer()
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    # Depends() has to be evaluated in the default: that is how FastAPI
+    # resolves the dependency per request, so B008 does not apply here.
+    credentials: HTTPAuthorizationCredentials = Depends(security),  # noqa: B008
 ) -> str:
     """Extract user from token and set in request state."""
     # In a real app, you would validate the token

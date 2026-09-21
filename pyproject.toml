@@ -47,9 +47,11 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-timeout>=2.0.0",
     "httpx>=0.24.0",
-    "black>=23.0.0",
     "mypy>=1.0.0",
-    "ruff>=0.1.0",
+    # Pinned rather than floated: CI, pre-commit and every developer have to
+    # agree on what counts as a violation. Bump here and the workflows follow,
+    # because they install ruff from this lock rather than from a second pin.
+    "ruff==0.16.1",
 ]
 
 [project.urls]
@@ -68,17 +70,34 @@ package-dir = {"" = "src"}
 [tool.setuptools.package-data]
 auditry = ["py.typed"]
 
-[tool.black]
-line-length = 100
-target-version = ["py39", "py310", "py311", "py312"]
-
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "W", "I", "N", "B", "C4", "PT", "UP"]
-ignore = ["E501"]
+# The oldest interpreter in requires-python: UP rewrites are only safe up to it.
 target-version = "py39"
+src = ["src"]
+exclude = [".venv", "venv", "__pycache__", "build", "dist"]
+# The formatter also rewrites Python code blocks inside Markdown. The README's
+# samples are annotated by hand -- blank-line grouping and aligned comments
+# that carry meaning -- so docs are left to their authors.
+# https://docs.astral.sh/ruff/formatter/
+extend-exclude = ["*.md"]
+# Without this, an exclusion only holds while ruff is walking a directory: a
+# path named on the command line is processed anyway. pre-commit passes each
+# changed file by name, so the README would come back reformatted.
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "C4", "PT", "UP"]
+# E501: the formatter already wraps code to line-length. What survives is long
+# strings, URLs and comments, which it deliberately does not rewrap.
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 # Hard ceiling so a regressed event-loop spin (see DEV-1150) fails fast in CI
 # instead of hanging the run indefinitely.
 timeout = 30

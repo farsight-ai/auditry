@@ -1,9 +1,9 @@
 """Core framework-agnostic observability logic."""
 
 from .base import (
+    BaseMiddleware,
     BaseRequestAdapter,
     BaseResponseAdapter,
-    BaseMiddleware,
 )
 from .logger import RequestResponseLogger
 

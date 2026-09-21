@@ -1,0 +1,45 @@
+name: Lint
+
+# Draft pull requests raise opened/synchronize/reopened like any other, so the
+# defaults already cover them. ready_for_review is added so the check reports
+# again when a draft is promoted, rather than showing the draft's last run.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+# One run per ref. A push to an open pull request cancels the run it replaced.
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --locked fails if uv.lock no longer matches pyproject.toml, so a
+      # forgotten re-lock is caught here instead of at the next sync. The
+      # ruff version comes from the lock, which is what makes the local run
+      # and this one agree.
+      - name: Install dependencies
+        run: uv sync --all-extras --locked
+
+      # ruff check, then ruff format --check, writing nothing. Violations are
+      # emitted as inline annotations on the diff.
+      - name: Lint
+        run: ./scripts/lintme.sh --check

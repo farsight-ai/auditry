@@ -6,7 +6,7 @@ FastAPI/Starlette request and response objects.
 """
 
 import inspect
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import Request, Response
 from starlette.responses import StreamingResponse
@@ -19,7 +19,7 @@ class FastAPIRequestAdapter(BaseRequestAdapter):
 
     def __init__(self):
         """Initialize the adapter with a body cache for request bodies."""
-        self._body_cache: Dict[int, bytes] = {}
+        self._body_cache: dict[int, bytes] = {}
 
     async def extract_method(self, request: Request) -> str:
         """Extract HTTP method from FastAPI request."""
@@ -29,15 +29,15 @@ class FastAPIRequestAdapter(BaseRequestAdapter):
         """Extract URL path from FastAPI request."""
         return request.url.path
 
-    async def extract_headers(self, request: Request) -> Dict[str, str]:
+    async def extract_headers(self, request: Request) -> dict[str, str]:
         """Extract headers from FastAPI request."""
         return dict(request.headers)
 
-    async def extract_query_params(self, request: Request) -> Dict[str, str]:
+    async def extract_query_params(self, request: Request) -> dict[str, str]:
         """Extract query parameters from FastAPI request."""
         return dict(request.query_params)
 
-    async def extract_path_params(self, request: Request) -> Dict[str, str]:
+    async def extract_path_params(self, request: Request) -> dict[str, str]:
         """Extract path parameters from FastAPI request."""
         # FastAPI stores path params in request.path_params
         if hasattr(request, "path_params"):
@@ -91,7 +91,7 @@ class FastAPIResponseAdapter(BaseResponseAdapter):
         """Extract status code from FastAPI response."""
         return response.status_code
 
-    async def extract_headers(self, response: Response) -> Dict[str, str]:
+    async def extract_headers(self, response: Response) -> dict[str, str]:
         """Extract headers from FastAPI response."""
         return dict(response.headers)
 
@@ -108,7 +108,9 @@ class FastAPIResponseAdapter(BaseResponseAdapter):
         # Check if response has a body_iterator (generator/async generator)
         if hasattr(response, "body_iterator"):
             # Check if it's a generator or async generator
-            if inspect.isasyncgen(response.body_iterator) or inspect.isgenerator(response.body_iterator):
+            if inspect.isasyncgen(response.body_iterator) or inspect.isgenerator(
+                response.body_iterator
+            ):
                 return None
 
         # Get body if available

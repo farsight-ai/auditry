@@ -5,8 +5,8 @@ This module provides Quart-specific implementations for the
 observability middleware.
 """
 
-from .middleware import QuartMiddleware, create_middleware
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
+from .middleware import QuartMiddleware, create_middleware
 
 __all__ = [
     "QuartMiddleware",

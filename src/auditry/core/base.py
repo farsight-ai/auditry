@@ -6,7 +6,7 @@ The design prioritizes clarity, maintainability, and proper separation of concer
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 
 class BaseRequestAdapter(ABC):
@@ -28,17 +28,17 @@ class BaseRequestAdapter(ABC):
         pass
 
     @abstractmethod
-    async def extract_headers(self, request: Any) -> Dict[str, str]:
+    async def extract_headers(self, request: Any) -> dict[str, str]:
         """Extract headers as a dictionary from the request."""
         pass
 
     @abstractmethod
-    async def extract_query_params(self, request: Any) -> Dict[str, str]:
+    async def extract_query_params(self, request: Any) -> dict[str, str]:
         """Extract query parameters as a dictionary from the request."""
         pass
 
     @abstractmethod
-    async def extract_path_params(self, request: Any) -> Dict[str, str]:
+    async def extract_path_params(self, request: Any) -> dict[str, str]:
         """Extract path/route parameters as a dictionary from the request."""
         pass
 
@@ -61,7 +61,7 @@ class BaseRequestAdapter(ABC):
         """
         pass
 
-    async def extract_all(self, request: Any) -> Dict[str, Any]:
+    async def extract_all(self, request: Any) -> dict[str, Any]:
         """
         Extract all request data into a standardized dictionary.
 
@@ -93,7 +93,7 @@ class BaseResponseAdapter(ABC):
         pass
 
     @abstractmethod
-    async def extract_headers(self, response: Any) -> Dict[str, str]:
+    async def extract_headers(self, response: Any) -> dict[str, str]:
         """Extract headers as a dictionary from the response."""
         pass
 
@@ -107,7 +107,7 @@ class BaseResponseAdapter(ABC):
         """
         pass
 
-    async def extract_all(self, response: Any) -> Dict[str, Any]:
+    async def extract_all(self, response: Any) -> dict[str, Any]:
         """
         Extract all response data into a standardized dictionary.
 

@@ -11,13 +11,14 @@ Run with: uvicorn examples.simple_app:app --reload
 """
 
 from fastapi import FastAPI, Request
+
 from auditry import (
-    configure_logging,
-    get_logger,
-    ObservabilityMiddleware,
-    ObservabilityConfig,
     BusinessEventConfig,
+    ObservabilityConfig,
+    ObservabilityMiddleware,
+    configure_logging,
     get_correlation_id,
+    get_logger,
 )
 
 # Configure structured logging at startup
@@ -38,7 +39,6 @@ app.add_middleware(
         log_request_headers=True,
         log_response_headers=False,
         payload_size_limit=10_240,  # 10KB
-
         # Tag business events for analytics (optional)
         business_events={
             "POST /folders": BusinessEventConfig(

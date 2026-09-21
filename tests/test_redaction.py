@@ -1,4 +1,5 @@
 """Basic tests for redaction functionality."""
+
 from auditry.redaction import redact_data, redact_headers
 
 

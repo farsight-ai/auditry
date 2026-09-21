@@ -1,0 +1,39 @@
+name: Tests
+
+# Same trigger set as Lint: drafts raise the default types, and
+# ready_for_review makes the check report again when a draft is promoted.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --all-extras brings in fastapi and quart: the suite exercises both
+      # middlewares, and the fastapi tests are skipped without them.
+      - name: Install dependencies
+        run: uv sync --all-extras --locked
+
+      - name: Run tests
+        run: ./scripts/runtests.sh

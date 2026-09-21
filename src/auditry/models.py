@@ -1,4 +1,5 @@
-from typing import Optional, Dict, List, Union
+from typing import Optional, Union
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -12,17 +13,15 @@ class BusinessEventConfig(BaseModel):
     event_type: str = Field(
         description="Business event type (e.g., 'folder.created', 'file.uploaded')"
     )
-    extract_from_request: Optional[List[str]] = Field(
-        default=None,
-        description="Field names to extract from request body for business context"
+    extract_from_request: Optional[list[str]] = Field(
+        default=None, description="Field names to extract from request body for business context"
     )
-    extract_from_response: Optional[List[str]] = Field(
-        default=None,
-        description="Field names to extract from response body for business context"
+    extract_from_response: Optional[list[str]] = Field(
+        default=None, description="Field names to extract from response body for business context"
     )
-    extract_from_path: Optional[List[str]] = Field(
+    extract_from_path: Optional[list[str]] = Field(
         default=None,
-        description="Path parameter names to extract (e.g., ['folder_id'] for /folders/{folder_id})"
+        description="Path parameter names to extract (e.g., ['folder_id'] for /folders/{folder_id})",
     )
 
 
@@ -36,7 +35,7 @@ class ObservabilityConfig(BaseModel):
 
     service_name: str = Field(
         min_length=1,
-        description="Name of the service for logging context (e.g., 'vault-api', 'auth-service')"
+        description="Name of the service for logging context (e.g., 'vault-api', 'auth-service')",
     )
     correlation_id_header: str = Field(
         default="X-Request-ID",
@@ -50,9 +49,10 @@ class ObservabilityConfig(BaseModel):
         if not v or not v.strip():
             raise ValueError("service_name cannot be empty or whitespace")
         return v.strip()
-    business_events: Optional[Dict[str, BusinessEventConfig]] = Field(
+
+    business_events: Optional[dict[str, BusinessEventConfig]] = Field(
         default=None,
-        description="Map of endpoint patterns to business event configurations for analytics tracking"
+        description="Map of endpoint patterns to business event configurations for analytics tracking",
     )
     payload_size_limit: int = Field(
         default=10_240,
@@ -70,12 +70,10 @@ class ObservabilityConfig(BaseModel):
     )
     log_query_params: bool = Field(default=True, description="Whether to log query parameters")
     log_request_body: bool = Field(
-        default=True,
-        description="Whether to log request bodies for the application"
+        default=True, description="Whether to log request bodies for the application"
     )
     log_response_body: bool = Field(
-        default=True,
-        description="Whether to log response bodies for the application"
+        default=True, description="Whether to log response bodies for the application"
     )
     log_exception_messages: bool = Field(
         default=False,
@@ -84,14 +82,14 @@ class ObservabilityConfig(BaseModel):
             "exception messages frequently interpolate user content. The error "
             "TYPE and correlation ID are always logged; full tracebacks route "
             "via auditry.set_trace_handler to a gated destination."
-        )
+        ),
     )
-    excluded_paths: Optional[Union[List[str], Dict[str, List[str]]]] = Field(
+    excluded_paths: Optional[Union[list[str], dict[str, list[str]]]] = Field(
         default=None,
         description=(
             "Paths to exclude from observability middleware. "
             "Can be a list of path patterns (e.g., ['/health', '/metrics', '/stream*']) "
             "or a dict mapping HTTP methods to paths (e.g., {'GET': ['/health'], 'POST': ['/stream*']}). "
             "Supports wildcards (*) for pattern matching."
-        )
+        ),
     )

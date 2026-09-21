@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -22,6 +23,7 @@ def app():
             for i in range(3):
                 yield f"data: chunk {i}\n\n"
                 await asyncio.sleep(0.01)
+
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     @app.get("/regular")
@@ -37,6 +39,7 @@ def app():
         def generate():
             for i in range(3):
                 yield f"data: sync chunk {i}\n\n"
+
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     return app
@@ -50,6 +53,7 @@ def app_without_middleware():
     @app.get("/stream")
     async def streaming_endpoint():
         """Endpoint that returns streaming response."""
+
         async def generate():
             for i in range(3):
                 yield f"data: chunk {i}\n\n"
@@ -193,10 +197,12 @@ def test_multiple_requests_sequential(client):
 
 def test_streaming_with_different_media_types(app):
     """Test streaming with different media types."""
+
     # Add an endpoint with different media type
     @app.get("/json-stream")
     async def json_streaming_endpoint():
         """Endpoint that returns streaming JSON."""
+
         async def generate():
             for i in range(3):
                 yield json.dumps({"chunk": i}) + "\n"
@@ -225,11 +231,13 @@ def test_streaming_with_different_media_types(app):
 
 def test_error_in_streaming_response(app):
     """Test that errors in streaming responses are handled correctly."""
+
     @app.get("/error-stream")
     async def error_streaming_endpoint():
         """Endpoint that raises an error during streaming."""
+
         async def generate():
-            yield f"data: chunk 0\n\n"
+            yield "data: chunk 0\n\n"
             await asyncio.sleep(0.01)
             raise ValueError("Streaming error")
 
@@ -237,12 +245,11 @@ def test_error_in_streaming_response(app):
 
     client = TestClient(app)
 
-    # The TestClient will handle the error differently than a real server
-    # In a real scenario, the connection would be closed
-    with pytest.raises(ValueError):
-        response = client.get("/error-stream")
-        # Force reading all content to trigger the error
-        _ = response.text
+    # TestClient drains the stream inside the request call, so the generator's
+    # error surfaces out of get() itself -- not from reading .text afterwards,
+    # which is never reached.
+    with pytest.raises(ValueError, match="Streaming error"):
+        client.get("/error-stream")
 
 
 @pytest.mark.timeout(10, method="thread")
@@ -305,6 +312,7 @@ def test_request_id_header_appears_exactly_once():
     async def stream():
         async def gen():
             yield b"data: x\n\n"
+
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     app = create_middleware(app, config)

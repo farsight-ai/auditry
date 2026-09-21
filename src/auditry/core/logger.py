@@ -7,11 +7,11 @@ request and response data captured by the framework adapters.
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import structlog
 
-from ..models import ObservabilityConfig, BusinessEventConfig
+from ..models import BusinessEventConfig, ObservabilityConfig
 from ..redaction import redact_data, redact_headers
 
 
@@ -42,10 +42,8 @@ class RequestResponseLogger:
         self.logger = structlog.get_logger(__name__)
 
     def prepare_request_data(
-        self,
-        raw_data: Dict[str, Any],
-        correlation_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, raw_data: dict[str, Any], correlation_id: Optional[str] = None
+    ) -> dict[str, Any]:
         """
         Prepare request data for logging.
 
@@ -91,7 +89,7 @@ class RequestResponseLogger:
 
         return prepared
 
-    def prepare_response_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    def prepare_response_data(self, raw_data: dict[str, Any]) -> dict[str, Any]:
         """
         Prepare response data for logging.
 
@@ -124,8 +122,8 @@ class RequestResponseLogger:
 
     def log_success(
         self,
-        request_data: Dict[str, Any],
-        response_data: Dict[str, Any],
+        request_data: dict[str, Any],
+        response_data: dict[str, Any],
         duration_ms: float,
         correlation_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -143,9 +141,7 @@ class RequestResponseLogger:
         self._bind_context(correlation_id, user_id)
 
         # Extract business event if applicable
-        event_type, business_context = self._extract_business_event(
-            request_data, response_data
-        )
+        event_type, business_context = self._extract_business_event(request_data, response_data)
 
         # Build log entry
         log_entry = {
@@ -163,12 +159,12 @@ class RequestResponseLogger:
         self.logger.info(
             f"Request completed: {request_data['method']} {request_data['path']} - "
             f"Status: {response_data['status_code']} - Duration: {duration_ms:.2f}ms",
-            **log_entry
+            **log_entry,
         )
 
     def log_error(
         self,
-        request_data: Dict[str, Any],
+        request_data: dict[str, Any],
         error: Exception,
         duration_ms: float,
         correlation_id: Optional[str] = None,
@@ -212,7 +208,7 @@ class RequestResponseLogger:
             f"Request failed: {request_data['method']} {request_data['path']} - "
             f"Duration: {duration_ms:.2f}ms",
             exc_info=(type(error), error, error.__traceback__),
-            **log_entry
+            **log_entry,
         )
 
     def _bind_context(self, correlation_id: Optional[str], user_id: Optional[str]) -> None:
@@ -240,7 +236,7 @@ class RequestResponseLogger:
             return {
                 "_truncated": True,
                 "_original_size": len(body),
-                "_preview": body[:self.payload_size_limit].decode("utf-8", errors="replace"),
+                "_preview": body[: self.payload_size_limit].decode("utf-8", errors="replace"),
             }
 
         # Try to parse as JSON
@@ -255,10 +251,8 @@ class RequestResponseLogger:
                 return "<binary data>"
 
     def _extract_business_event(
-        self,
-        request_data: Dict[str, Any],
-        response_data: Dict[str, Any]
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        self, request_data: dict[str, Any], response_data: dict[str, Any]
+    ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
         """
         Extract business event information if the request matches a configured pattern.
 
@@ -279,11 +273,7 @@ class RequestResponseLogger:
         # Find matching business event configuration
         for pattern, event_config in self.business_events.items():
             if self._matches_pattern(endpoint, pattern):
-                context = self._extract_business_context(
-                    event_config,
-                    request_data,
-                    response_data
-                )
+                context = self._extract_business_context(event_config, request_data, response_data)
                 return event_config.event_type, context
 
         return None, None
@@ -322,9 +312,9 @@ class RequestResponseLogger:
     def _extract_business_context(
         self,
         event_config: BusinessEventConfig,
-        request_data: Dict[str, Any],
-        response_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        request_data: dict[str, Any],
+        response_data: dict[str, Any],
+    ) -> dict[str, Any]:
         """
         Extract business context fields from request and response data.
 
