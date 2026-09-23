@@ -1,0 +1,43 @@
+name: Tests
+
+# Same trigger set as Lint: drafts raise the default types, and
+# ready_for_review makes the check report again when a draft is promoted.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party actions are pinned to a full commit SHA. A tag, including a
+      # patch tag, is mutable and can be repointed at different code; a SHA
+      # cannot. The trailing comment is the release the SHA corresponds to, so
+      # the pin stays readable and bumps stay reviewable.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --all-extras brings in fastapi and quart: the suite exercises both
+      # middlewares, and the fastapi tests are skipped without them.
+      - name: Install dependencies
+        run: uv sync --all-extras --locked
+
+      - name: Run tests
+        run: ./scripts/runtests.sh

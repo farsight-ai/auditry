@@ -49,6 +49,13 @@ def last_line(capsys):
     return json.loads(out[-1])
 
 
+def log_caught_exception(logger):
+    try:
+        raise ValueError("x")
+    except ValueError:
+        logger.error("failed", exc_info=True)
+
+
 class TestRootSchema:
     """Every line carries the root schema."""
 
@@ -62,7 +69,7 @@ class TestRootSchema:
         assert rec["version"] == "1.2.3"
         assert rec["environment"] == "test"
         assert rec["level"] == "info"
-        assert rec["message"] == "hello"       # message, not "event"
+        assert rec["message"] == "hello"  # message, not "event"
         assert "event" not in rec
         assert "timestamp" in rec
         assert rec["extra_field"] == "x"
@@ -184,9 +191,7 @@ class TestConfigDefaults:
     def test_explicit_body_flags_do_not_warn(self):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            ObservabilityConfig(
-                service_name="svc", log_request_body=False, log_response_body=False
-            )
+            ObservabilityConfig(service_name="svc", log_request_body=False, log_response_body=False)
 
     def test_default_health_paths_merged(self):
         cfg = ObservabilityConfig(
@@ -328,9 +333,7 @@ class TestServiceIdentity:
         assert last_line(capsys)["service"] == "worker-svc"
 
     def test_version_and_environment_still_come_from_configure_logging(self, capsys):
-        logger, _ = configure_and_capture(
-            capsys, service="x", version="9.9.9", environment="stage"
-        )
+        logger, _ = configure_and_capture(capsys, service="x", version="9.9.9", environment="stage")
         _set_config_service("from-config")
         logger.info("line")
         rec = last_line(capsys)
@@ -346,8 +349,22 @@ class TestStrictPolicy:
 
     @pytest.mark.parametrize(
         "env",
-        ["local", "local-chris", "dev", "dev-feature-x", "development", "sandbox",
-         "plat-sandbox", "test", "testing", "ci", "qa", "staging", "stage", "DEV"],
+        [
+            "local",
+            "local-chris",
+            "dev",
+            "dev-feature-x",
+            "development",
+            "sandbox",
+            "plat-sandbox",
+            "test",
+            "testing",
+            "ci",
+            "qa",
+            "staging",
+            "stage",
+            "DEV",
+        ],
     )
     def test_known_non_production_names_are_strict(self, env):
         configure_logging(service="s", environment=env)
@@ -390,10 +407,7 @@ class TestStrictPolicy:
         set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
         logger, _ = configure_and_capture(capsys, service="s", environment="test")
         with pytest.raises(RuntimeError, match="handler broke"):
-            try:
-                raise ValueError("x")
-            except ValueError:
-                logger.error("failed", exc_info=True)
+            log_caught_exception(logger)
 
     def test_failing_trace_handler_is_swallowed_in_production(self, capsys):
         set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
@@ -414,13 +428,10 @@ class TestBodiesStaySingleLine:
         from auditry.core.logger import RequestResponseLogger
 
         configure_and_capture(capsys, service="s")
-        cfg = ObservabilityConfig(
-            service_name="s", log_request_body=True, log_response_body=True
-        )
+        cfg = ObservabilityConfig(service_name="s", log_request_body=True, log_response_body=True)
         rrl = RequestResponseLogger(cfg)
         req = rrl.prepare_request_data(
-            {"method": "POST", "path": "/x",
-             "body": json.dumps({"note": "line1\nline2"}).encode()},
+            {"method": "POST", "path": "/x", "body": json.dumps({"note": "line1\nline2"}).encode()},
             correlation_id="cid",
         )
         resp = rrl.prepare_response_data(

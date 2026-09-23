@@ -101,10 +101,20 @@ _LOGGER_NAME = "auditry.metrics"
 # positional argument of the structlog call (a collision raises inside emit),
 # ``exc_info`` triggers exception processing, and the schema processors
 # overwrite the others, silently losing the metric or dimension value.
-_RESERVED_RECORD_KEYS = frozenset({
-    "_aws", "event", "exc_info", "message", "level", "timestamp",
-    "service", "version", "environment", "correlation_id",
-})
+_RESERVED_RECORD_KEYS = frozenset(
+    {
+        "_aws",
+        "event",
+        "exc_info",
+        "message",
+        "level",
+        "timestamp",
+        "service",
+        "version",
+        "environment",
+        "correlation_id",
+    }
+)
 
 # A validation problem: the exception class it maps to in strict mode, the
 # offending name (dimension or metric), and the human-readable reason.
@@ -131,49 +141,55 @@ def _dimension_problems(dimensions: dict[str, Any]) -> list[_Problem]:
         norm = _normalize(key)
         for pattern in FORBIDDEN_DIMENSION_PATTERNS:
             if pattern in norm:
-                problems.append((
-                    ForbiddenDimensionError,
-                    key,
-                    f"dimension name '{key}' matches forbidden pattern '{pattern}' — "
-                    "metric dimensions must never carry PII or user content (they "
-                    "are unencrypted, widely readable, and unerasable); aggregate "
-                    "by an opaque tenant/org ID instead",
-                ))
+                problems.append(
+                    (
+                        ForbiddenDimensionError,
+                        key,
+                        f"dimension name '{key}' matches forbidden pattern '{pattern}' — "
+                        "metric dimensions must never carry PII or user content (they "
+                        "are unencrypted, widely readable, and unerasable); aggregate "
+                        "by an opaque tenant/org ID instead",
+                    )
+                )
                 break
         # Value side. Type errors are misuse, not policy: they map to
         # TypeError so "you passed a dict" never reads as "you leaked PII".
         if not isinstance(value, str):
-            problems.append((
-                TypeError,
-                key,
-                f"dimension '{key}' value must be a string or number, got "
-                f"{type(value).__name__}",
-            ))
+            problems.append(
+                (
+                    TypeError,
+                    key,
+                    f"dimension '{key}' value must be a string or number, got "
+                    f"{type(value).__name__}",
+                )
+            )
             continue
         # Structural guard on the value: bounded, single-line strings only.
         # This catches free-form content (a prompt, a document, an error
         # message) being passed where an identifier belongs.
         multi_line = "\n" in value
         if not value:
-            problems.append((
-                ForbiddenDimensionError, key, f"dimension '{key}' value is empty"
-            ))
+            problems.append((ForbiddenDimensionError, key, f"dimension '{key}' value is empty"))
         elif multi_line or len(value) > _MAX_DIMENSION_VALUE_LEN:
-            problems.append((
-                ForbiddenDimensionError,
-                key,
-                f"dimension '{key}' value is "
-                f"{'multi-line' if multi_line else 'too long'} (max "
-                f"{_MAX_DIMENSION_VALUE_LEN} chars, single-line) — long or "
-                "multi-line values indicate user content in a dimension",
-            ))
+            problems.append(
+                (
+                    ForbiddenDimensionError,
+                    key,
+                    f"dimension '{key}' value is "
+                    f"{'multi-line' if multi_line else 'too long'} (max "
+                    f"{_MAX_DIMENSION_VALUE_LEN} chars, single-line) — long or "
+                    "multi-line values indicate user content in a dimension",
+                )
+            )
     if len(dimensions) > _MAX_DIMENSIONS:
-        problems.append((
-            DimensionLimitError,
-            "*",
-            f"{len(dimensions)} dimensions exceeds the sane-cardinality cap of "
-            f"{_MAX_DIMENSIONS}; every dimension set is a distinct metric",
-        ))
+        problems.append(
+            (
+                DimensionLimitError,
+                "*",
+                f"{len(dimensions)} dimensions exceeds the sane-cardinality cap of "
+                f"{_MAX_DIMENSIONS}; every dimension set is a distinct metric",
+            )
+        )
     return problems
 
 
@@ -191,22 +207,26 @@ def _record_problems(
     reserved = _RESERVED_RECORD_KEYS & (set(dims) | set(metrics))
     colliding = set(dims) & set(metrics)
     if reserved or colliding:
-        problems.append((
-            MetricRecordError,
-            ",".join(sorted(reserved | colliding)),
-            f"metric/dimension names collide in the flattened EMF record "
-            f"(reserved: {sorted(reserved)}, overlapping: {sorted(colliding)}) — "
-            "metric and dimension names must be distinct and must not use "
-            "reserved EMF or log-pipeline fields",
-        ))
+        problems.append(
+            (
+                MetricRecordError,
+                ",".join(sorted(reserved | colliding)),
+                f"metric/dimension names collide in the flattened EMF record "
+                f"(reserved: {sorted(reserved)}, overlapping: {sorted(colliding)}) — "
+                "metric and dimension names must be distinct and must not use "
+                "reserved EMF or log-pipeline fields",
+            )
+        )
     for rollup in rollup_dimension_sets or []:
         missing = [k for k in rollup if k not in dims]
         if missing:
-            problems.append((
-                MetricRecordError,
-                ",".join(missing),
-                f"rollup dimension(s) {missing} not present in the record",
-            ))
+            problems.append(
+                (
+                    MetricRecordError,
+                    ",".join(missing),
+                    f"rollup dimension(s) {missing} not present in the record",
+                )
+            )
     return problems
 
 

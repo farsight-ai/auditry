@@ -1,7 +1,6 @@
-from typing import Any, Dict, List, Set
+from typing import Any
 
-
-DEFAULT_REDACTION_PATTERNS: List[str] = [
+DEFAULT_REDACTION_PATTERNS: list[str] = [
     "password",
     "passwd",
     "token",
@@ -42,14 +41,14 @@ class SensitiveDataRedactor:
     values with a redaction marker. Supports nested dictionaries and lists.
     """
 
-    def __init__(self, additional_patterns: List[str] = None):
+    def __init__(self, additional_patterns: list[str] = None):
         """
         Initialize redactor with field patterns to redact.
 
         Args:
             additional_patterns: Additional field name patterns beyond defaults
         """
-        self.patterns: Set[str] = set(pattern.lower() for pattern in DEFAULT_REDACTION_PATTERNS)
+        self.patterns: set[str] = {pattern.lower() for pattern in DEFAULT_REDACTION_PATTERNS}
         if additional_patterns:
             self.patterns.update(pattern.lower() for pattern in additional_patterns)
 
@@ -94,7 +93,7 @@ class SensitiveDataRedactor:
             # Primitive type, return as-is
             return data
 
-    def _redact_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _redact_dict(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Redact sensitive fields in a dictionary.
 
@@ -113,7 +112,7 @@ class SensitiveDataRedactor:
                 redacted[key] = value
         return redacted
 
-    def _redact_list(self, data: List[Any]) -> List[Any]:
+    def _redact_list(self, data: list[Any]) -> list[Any]:
         """
         Redact sensitive data in a list.
 
@@ -126,7 +125,7 @@ class SensitiveDataRedactor:
 _default_redactor = SensitiveDataRedactor()
 
 
-def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def redact_headers(headers: dict[str, str]) -> dict[str, str]:
     """
     Redact sensitive headers for logging.
 
@@ -142,7 +141,7 @@ def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return _default_redactor.redact(headers)
 
 
-def redact_data(data: Any, additional_patterns: List[str] = None) -> Any:
+def redact_data(data: Any, additional_patterns: list[str] = None) -> Any:
     """
     Convenience function to redact sensitive data.
 

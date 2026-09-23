@@ -1,12 +1,11 @@
 """Path matching utilities for middleware exclusions."""
+
 import fnmatch
-from typing import Optional, List, Dict, Union
+from typing import Optional, Union
 
 
 def should_exclude_path(
-    path: str,
-    method: str,
-    excluded_paths: Optional[Union[List[str], Dict[str, List[str]]]]
+    path: str, method: str, excluded_paths: Optional[Union[list[str], dict[str, list[str]]]]
 ) -> bool:
     """
     Check if a request path should be excluded from middleware processing.
@@ -36,8 +35,8 @@ def should_exclude_path(
         return False
 
     # strip query params
-    if '?' in path:
-        path = path.split('?')[0]
+    if "?" in path:
+        path = path.split("?")[0]
 
     if isinstance(excluded_paths, list):
         return _match_path_patterns(path, excluded_paths)
@@ -48,25 +47,25 @@ def should_exclude_path(
             return True
 
         # also check wildcard patterns
-        all_patterns = excluded_paths.get('*', [])
+        all_patterns = excluded_paths.get("*", [])
         if _match_path_patterns(path, all_patterns):
             return True
 
     return False
 
 
-def _match_path_patterns(path: str, patterns: List[str]) -> bool:
+def _match_path_patterns(path: str, patterns: list[str]) -> bool:
     """Check if path matches any pattern."""
     for pattern in patterns:
         if pattern == path:
             return True
 
         # wildcard matching
-        if ('*' in pattern or '?' in pattern) and fnmatch.fnmatch(path, pattern):
+        if ("*" in pattern or "?" in pattern) and fnmatch.fnmatch(path, pattern):
             return True
 
         # prefix matching
-        if pattern.endswith('/') and path.startswith(pattern):
+        if pattern.endswith("/") and path.startswith(pattern):
             return True
 
     return False

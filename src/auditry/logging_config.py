@@ -31,9 +31,9 @@ This module provides JSON-formatted logging with production-safe defaults:
 import logging
 import os
 import sys
+from collections.abc import MutableMapping
 from types import TracebackType
 from typing import Any, Callable, Optional
-from collections.abc import MutableMapping
 
 import structlog
 from asgi_correlation_id import correlation_id
@@ -66,10 +66,21 @@ _FULL_TRACEBACKS_ENV = "AUDITRY_FULL_TRACEBACKS"
 # including no environment at all — is treated as production. Deriving the
 # other way round ("strict unless it says prod") would turn strict on in a
 # dedicated customer account whose stage name carries no hint.
-NON_PRODUCTION_ENVIRONMENTS = frozenset({
-    "local", "dev", "development", "sandbox", "plat-sandbox",
-    "test", "testing", "ci", "qa", "staging", "stage",
-})
+NON_PRODUCTION_ENVIRONMENTS = frozenset(
+    {
+        "local",
+        "dev",
+        "development",
+        "sandbox",
+        "plat-sandbox",
+        "test",
+        "testing",
+        "ci",
+        "qa",
+        "staging",
+        "stage",
+    }
+)
 NON_PRODUCTION_PREFIXES = ("local-", "dev-")
 _STRICT_ENV = "AUDITRY_STRICT"
 _strict: bool = False
@@ -105,6 +116,7 @@ def _resolve_strict(explicit: Optional[bool], environment: Optional[str]) -> boo
         return flag in ("1", "true", "yes")
     return is_non_production_environment(environment)
 
+
 ExcInfo = tuple[type[BaseException], BaseException, Optional[TracebackType]]
 TraceHandler = Callable[[str, ExcInfo, dict[str, Any]], None]
 
@@ -133,6 +145,7 @@ def _set_config_service(service_name: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 # structlog processors
 # ---------------------------------------------------------------------------
+
 
 def _add_service_context(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
@@ -234,6 +247,7 @@ def _rename_event_to_message(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def configure_logging(
     level: str = "INFO",

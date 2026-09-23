@@ -21,8 +21,8 @@ mid-chain, so one ID follows a request across every service.
 import functools
 import inspect
 import uuid
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable, Optional, TypeVar
 
 from asgi_correlation_id import correlation_id

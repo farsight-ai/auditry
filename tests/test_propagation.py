@@ -120,7 +120,9 @@ class TestOutbound:
 
     def test_outbound_headers_custom_name_and_extra(self):
         bind_correlation_id("abc-123")
-        headers = outbound_headers(header_name="X-Job-Id", extra={"Content-Type": "application/json"})
+        headers = outbound_headers(
+            header_name="X-Job-Id", extra={"Content-Type": "application/json"}
+        )
         assert headers["X-Job-Id"] == "abc-123"
         assert headers["Content-Type"] == "application/json"
 
@@ -139,7 +141,8 @@ class TestSqs:
     def test_merges_existing_attributes(self):
         bind_correlation_id("queue-id-2")
         attrs = sqs_message_attributes({"other": {"DataType": "String", "StringValue": "x"}})
-        assert "other" in attrs and "correlation_id" in attrs
+        assert "other" in attrs
+        assert "correlation_id" in attrs
 
     def test_missing_attribute_binds_fresh_id(self):
         # A consumer never logs without an ID.
@@ -192,11 +195,13 @@ class TestDecorator:
         """The documented SQS pattern: bind_from_sqs_message() in the consumer
         loop, then a decorated handler. The handler must continue that
         trace, not start a new one."""
-        bind_from_sqs_message({
-            "MessageAttributes": {
-                "correlation_id": {"DataType": "String", "StringValue": "from-queue"}
+        bind_from_sqs_message(
+            {
+                "MessageAttributes": {
+                    "correlation_id": {"DataType": "String", "StringValue": "from-queue"}
+                }
             }
-        })
+        )
 
         @with_correlation
         def handler(data):
@@ -270,14 +275,18 @@ class TestExtractCorrelationId:
     def test_extracts_and_binds_nothing(self):
         from auditry.propagation import extract_correlation_id
 
-        msg = {"MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-1"}}}
+        msg = {
+            "MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-1"}}
+        }
         assert extract_correlation_id(msg) == "q-1"
         assert correlation_id.get() is None
 
     def test_accepts_lambda_event_casing(self):
         from auditry.propagation import extract_correlation_id
 
-        msg = {"messageAttributes": {"correlation_id": {"dataType": "String", "stringValue": "q-2"}}}
+        msg = {
+            "messageAttributes": {"correlation_id": {"dataType": "String", "stringValue": "q-2"}}
+        }
         assert extract_correlation_id(msg) == "q-2"
 
     def test_missing_attribute_is_none(self):
@@ -289,7 +298,9 @@ class TestExtractCorrelationId:
         from auditry.propagation import extract_correlation_id
 
         bind_correlation_id("outer")
-        msg = {"MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-3"}}}
+        msg = {
+            "MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-3"}}
+        }
         with bound_correlation_id(extract_correlation_id(msg)):
             assert correlation_id.get() == "q-3"
         assert correlation_id.get() == "outer"
@@ -298,5 +309,6 @@ class TestExtractCorrelationId:
 def test_generated_ids_match_the_middleware_shape():
     # asgi-correlation-id mints uuid4().hex; ours should look the same.
     cid = bind_correlation_id()
-    assert len(cid) == 32 and "-" not in cid
+    assert len(cid) == 32
+    assert "-" not in cid
     assert uuid.UUID(cid).version == 4

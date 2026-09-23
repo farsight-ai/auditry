@@ -8,22 +8,21 @@ This example demonstrates:
 - Custom redaction patterns
 """
 
-from typing import Optional
 from dataclasses import dataclass
+from typing import Optional
 
-from quart import Quart, request, jsonify, abort
-from quart_schema import QuartSchema, validate_request, validate_response
 from pydantic import BaseModel
+from quart import Quart, abort, jsonify, request
+from quart_schema import QuartSchema, validate_request, validate_response
 
 # Import auditry components
 from auditry import (
-    ObservabilityConfig,
     BusinessEventConfig,
+    ObservabilityConfig,
     configure_logging,
     get_logger,
 )
 from auditry.quart import create_middleware
-
 
 # Configure structured logging
 configure_logging(level="INFO")
@@ -203,12 +202,14 @@ async def search_users():
 
     logger.info("Searching users", query=query, limit=limit)
 
-    return jsonify({
-        "results": [],
-        "query": query,
-        "limit": limit,
-        "total": 0,
-    })
+    return jsonify(
+        {
+            "results": [],
+            "query": query,
+            "limit": limit,
+            "total": 0,
+        }
+    )
 
 
 if __name__ == "__main__":

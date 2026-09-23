@@ -1,15 +1,14 @@
 """Path exclusion tests."""
 
-import pytest
 import asyncio
-import json
-from unittest.mock import patch
-from quart import Quart, Response, stream_with_context
+
+import pytest
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from quart import Quart, Response, stream_with_context
 from src.auditry import ObservabilityConfig, configure_logging
-from src.auditry.quart import create_middleware as create_quart_middleware
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
+from src.auditry.quart import create_middleware as create_quart_middleware
 
 
 # caplog only sees the middleware's records once structlog routes through stdlib.
@@ -20,12 +19,13 @@ def _configured_logging():
 
 # ================= Quart Tests =================
 
+
 @pytest.fixture
 def quart_app_with_exclusions():
     app = Quart(__name__)
     config = ObservabilityConfig(
         service_name="test-exclusion",
-        excluded_paths=['/health', '/metrics', '/stream*', '/api/*/internal']
+        excluded_paths=["/health", "/metrics", "/stream*", "/api/*/internal"],
     )
     app = create_quart_middleware(app, config)
 
@@ -44,6 +44,7 @@ def quart_app_with_exclusions():
             for i in range(3):
                 yield f"data: chunk {i}\n\n"
                 await asyncio.sleep(0.01)
+
         return Response(generate(), 200, mimetype="text/event-stream")
 
     @app.route("/api/v1/internal")
@@ -69,19 +70,19 @@ def quart_app_with_method_exclusions():
         service_name="test-method-exclusion",
         include_default_excluded_paths=False,
         excluded_paths={
-            'GET': ['/health', '/metrics'],
-            'POST': ['/webhook/*'],
-            '*': ['/admin/*']  # Excluded for all methods
-        }
+            "GET": ["/health", "/metrics"],
+            "POST": ["/webhook/*"],
+            "*": ["/admin/*"],  # Excluded for all methods
+        },
     )
 
     app = create_quart_middleware(app, config)
 
-    @app.route("/health", methods=['GET', 'POST'])
+    @app.route("/health", methods=["GET", "POST"])
     async def health():
         return {"status": "ok"}
 
-    @app.route("/webhook/github", methods=['POST'])
+    @app.route("/webhook/github", methods=["POST"])
     async def webhook():
         return {"received": True}
 
@@ -169,6 +170,7 @@ async def test_quart_method_specific_exclusion(quart_app_with_method_exclusions,
 
 # ================= FastAPI Tests =================
 
+
 @pytest.fixture
 def fastapi_app_with_exclusions():
     """Create a FastAPI app with path exclusions configured."""
@@ -176,8 +178,7 @@ def fastapi_app_with_exclusions():
 
     # Configure with excluded paths
     config = ObservabilityConfig(
-        service_name="test-fastapi-exclusion",
-        excluded_paths=['/health', '/metrics', '/stream*']
+        service_name="test-fastapi-exclusion", excluded_paths=["/health", "/metrics", "/stream*"]
     )
 
     # Apply middleware
@@ -196,6 +197,7 @@ def fastapi_app_with_exclusions():
         async def generate():
             for i in range(3):
                 yield f"data: chunk {i}\n\n".encode()
+
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     @app.get("/api/users")
@@ -263,29 +265,30 @@ async def test_fastapi_non_excluded_path_is_logged(fastapi_app_with_exclusions, 
 
 # ================= Path Matcher Unit Tests =================
 
+
 def test_matcher_basics():
     from src.auditry.path_matcher import should_exclude_path
 
     # exact
-    assert should_exclude_path('/health', 'GET', ['/health'])
-    assert not should_exclude_path('/healthy', 'GET', ['/health'])
+    assert should_exclude_path("/health", "GET", ["/health"])
+    assert not should_exclude_path("/healthy", "GET", ["/health"])
 
     # wildcards
-    assert should_exclude_path('/api/v1/users', 'GET', ['/api/*'])
-    assert should_exclude_path('/api/v1/internal', 'GET', ['/api/*/internal'])
+    assert should_exclude_path("/api/v1/users", "GET", ["/api/*"])
+    assert should_exclude_path("/api/v1/internal", "GET", ["/api/*/internal"])
 
     # query params ignored
-    assert should_exclude_path('/health?check=true', 'GET', ['/health'])
+    assert should_exclude_path("/health?check=true", "GET", ["/health"])
 
     # prefix with /
-    assert should_exclude_path('/api/v1/users', 'GET', ['/api/'])
-    assert not should_exclude_path('/apis', 'GET', ['/api/'])
+    assert should_exclude_path("/api/v1/users", "GET", ["/api/"])
+    assert not should_exclude_path("/apis", "GET", ["/api/"])
 
 
 def test_method_specific():
     from src.auditry.path_matcher import should_exclude_path
 
-    cfg = {'GET': ['/health'], 'POST': ['/webhook'], '*': ['/admin/*']}
-    assert should_exclude_path('/health', 'GET', cfg)
-    assert not should_exclude_path('/health', 'POST', cfg)
-    assert should_exclude_path('/admin/users', 'DELETE', cfg)
+    cfg = {"GET": ["/health"], "POST": ["/webhook"], "*": ["/admin/*"]}
+    assert should_exclude_path("/health", "GET", cfg)
+    assert not should_exclude_path("/health", "POST", cfg)
+    assert should_exclude_path("/admin/users", "DELETE", cfg)
