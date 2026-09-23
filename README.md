@@ -250,10 +250,10 @@ thing as a context manager — binds for the block, restores the previous contex
 after, so a long-lived worker never logs a finished job's ID against the next:
 
 ```python
-from auditry import bound_correlation_id
+from auditry import bound_correlation_id, extract_correlation_id
 
 for message in receive():
-    with bound_correlation_id(extract_id(message)):
+    with bound_correlation_id(extract_correlation_id(message)):
         logger.info("processing")        # carries this message's ID
 # nothing after the block does
 ```

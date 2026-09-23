@@ -29,6 +29,7 @@ Basic Usage:
 
 from .correlation import get_correlation_id
 from .logging_config import configure_logging, get_logger, set_trace_handler
+from .errors import AuditryError
 from .metrics import ForbiddenDimensionError, MetricsLogger
 from .models import BusinessEventConfig, ObservabilityConfig
 from .propagation import (
@@ -36,6 +37,7 @@ from .propagation import (
     bind_from_sqs_message,
     bound_correlation_id,
     ensure_correlation_id,
+    extract_correlation_id,
     outbound_headers,
     sqs_message_attributes,
     with_correlation,
@@ -59,8 +61,10 @@ __all__ = [
     "outbound_headers",
     "sqs_message_attributes",
     "bind_from_sqs_message",
+    "extract_correlation_id",
     "with_correlation",
     # Metrics
     "MetricsLogger",
     "ForbiddenDimensionError",
+    "AuditryError",
 ]

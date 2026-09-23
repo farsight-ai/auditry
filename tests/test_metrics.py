@@ -369,3 +369,47 @@ def test_emit_rejects_reserved_and_colliding_names():
     lenient.emit({"_aws": 1})
     lenient.emit({"Service": 1})
     assert sink.getvalue() == ""
+
+
+class TestErrorHierarchy:
+    def test_every_metrics_error_is_an_auditry_error(self):
+        from auditry import AuditryError
+        from auditry.metrics import DimensionLimitError, MetricRecordError
+
+        for exc in (ForbiddenDimensionError, DimensionLimitError, MetricRecordError):
+            assert issubclass(exc, AuditryError)
+            assert issubclass(exc, ValueError)  # existing `except ValueError` callers keep working
+
+    def test_cardinality_cap_has_its_own_error(self):
+        from auditry.metrics import DimensionLimitError
+
+        logger, _ = make_logger(strict=True)
+        with pytest.raises(DimensionLimitError):
+            logger.count("X", dimensions={f"D{i}": "v" for i in range(9)})
+
+
+class TestReservedPipelineKeys:
+    """A metric or dimension named after a log-pipeline field would either
+    raise inside the structlog call (`event`) or be silently overwritten by
+    the schema processors. Both are rejected before the record is built."""
+
+    @pytest.mark.parametrize(
+        "name", ["event", "message", "level", "timestamp", "service", "version",
+                 "environment", "correlation_id", "exc_info", "_aws"],
+    )
+    def test_reserved_metric_name_is_dropped_not_raised(self, name):
+        logger, sink = make_logger()
+        logger.count(name)  # must not raise into the caller
+        assert sink.getvalue() == ""
+
+    def test_reserved_name_through_the_real_pipeline_never_raises(self, capsys):
+        configure_logging(service="svc", environment="prod")
+        MetricsLogger(namespace="T", service="svc").count("event")  # would TypeError unguarded
+        assert any(r.get("metric_dropped") for r in stream_records(capsys))
+
+    def test_reserved_name_raises_in_strict_mode(self):
+        from auditry.metrics import MetricRecordError
+
+        logger, _ = make_logger(strict=True)
+        with pytest.raises(MetricRecordError, match="reserved"):
+            logger.count("X", dimensions={"correlation_id": "abc"})

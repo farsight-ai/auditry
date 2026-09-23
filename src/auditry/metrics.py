@@ -46,12 +46,15 @@ import json
 import logging
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Type
+from typing import Any, Optional
 
 import structlog
 
-__all__ = ["MetricsLogger", "ForbiddenDimensionError"]
+from .errors import DimensionLimitError, ForbiddenDimensionError, MetricRecordError
+
+__all__ = ["MetricsLogger", "ForbiddenDimensionError", "DimensionLimitError", "MetricRecordError"]
 
 # Dimension names that indicate PII or user content. Substring match,
 # case/format-insensitive ("userId", "user_id", "USER-ID" all match).
@@ -90,21 +93,26 @@ _MAX_DIMENSION_VALUE_LEN = 128
 # pinned to INFO so a WARNING root level cannot silently discard metrics.
 _LOGGER_NAME = "auditry.metrics"
 
-
-class ForbiddenDimensionError(ValueError):
-    """A metric dimension would carry PII or user content (policy violation)."""
-
+# Names a metric or dimension may not use. ``_aws`` is the EMF envelope. The
+# rest belong to the log pipeline the record travels through: ``event`` is the
+# positional argument of the structlog call (a collision raises inside emit),
+# ``exc_info`` triggers exception processing, and the schema processors
+# overwrite the others, silently losing the metric or dimension value.
+_RESERVED_RECORD_KEYS = frozenset({
+    "_aws", "event", "exc_info", "message", "level", "timestamp",
+    "service", "version", "environment", "correlation_id",
+})
 
 # A validation problem: the exception class it maps to in strict mode, the
 # offending name (dimension or metric), and the human-readable reason.
-_Problem = Tuple[Type[Exception], str, str]
+_Problem = tuple[type[Exception], str, str]
 
 
 def _normalize(name: str) -> str:
     return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
-def _coerce_dimension_values(dimensions: Dict[str, Any]) -> Dict[str, Any]:
+def _coerce_dimension_values(dimensions: dict[str, Any]) -> dict[str, Any]:
     """Scalars are ordinary dimension values — ``{"Attempt": 3}`` is a retry
     counter, not a privacy violation. Coerce numbers and booleans to str;
     leave everything else for validation to reject."""
@@ -114,8 +122,8 @@ def _coerce_dimension_values(dimensions: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _dimension_problems(dimensions: Dict[str, Any]) -> List[_Problem]:
-    problems: List[_Problem] = []
+def _dimension_problems(dimensions: dict[str, Any]) -> list[_Problem]:
+    problems: list[_Problem] = []
     for key, value in dimensions.items():
         norm = _normalize(key)
         for pattern in FORBIDDEN_DIMENSION_PATTERNS:
@@ -142,22 +150,23 @@ def _dimension_problems(dimensions: Dict[str, Any]) -> List[_Problem]:
         # Structural guard on the value: bounded, single-line strings only.
         # This catches free-form content (a prompt, a document, an error
         # message) being passed where an identifier belongs.
+        multi_line = "\n" in value
         if not value:
             problems.append((
                 ForbiddenDimensionError, key, f"dimension '{key}' value is empty"
             ))
-        elif len(value) > _MAX_DIMENSION_VALUE_LEN or "\n" in value:
+        elif multi_line or len(value) > _MAX_DIMENSION_VALUE_LEN:
             problems.append((
                 ForbiddenDimensionError,
                 key,
                 f"dimension '{key}' value is "
-                f"{'multi-line' if chr(10) in value else 'too long'} (max "
+                f"{'multi-line' if multi_line else 'too long'} (max "
                 f"{_MAX_DIMENSION_VALUE_LEN} chars, single-line) — long or "
                 "multi-line values indicate user content in a dimension",
             ))
     if len(dimensions) > _MAX_DIMENSIONS:
         problems.append((
-            ValueError,
+            DimensionLimitError,
             "*",
             f"{len(dimensions)} dimensions exceeds the sane-cardinality cap of "
             f"{_MAX_DIMENSIONS}; every dimension set is a distinct metric",
@@ -166,38 +175,39 @@ def _dimension_problems(dimensions: Dict[str, Any]) -> List[_Problem]:
 
 
 def _record_problems(
-    dims: Dict[str, Any],
-    metrics: Dict[str, float],
-    rollup_dimension_sets: Optional[List[List[str]]],
-) -> List[_Problem]:
+    dims: dict[str, Any],
+    metrics: dict[str, float],
+    rollup_dimension_sets: Optional[list[list[str]]],
+) -> list[_Problem]:
     """Problems with the record as a whole, beyond the dimensions."""
-    problems: List[_Problem] = []
-    # The EMF record is flat: _aws metadata, dimension values, and metric
-    # values share one JSON object. Names that collide would destroy the
-    # metadata or silently overwrite a value.
-    reserved = {"_aws"} & (set(dims) | set(metrics))
+    problems: list[_Problem] = []
+    # The EMF record is flat: envelope, dimension values, and metric values
+    # share one JSON object, and that object is then passed through the log
+    # pipeline. Names that collide destroy the envelope, overwrite a value,
+    # or (``event``) raise inside the logger call.
+    reserved = _RESERVED_RECORD_KEYS & (set(dims) | set(metrics))
     colliding = set(dims) & set(metrics)
     if reserved or colliding:
         problems.append((
-            ValueError,
+            MetricRecordError,
             ",".join(sorted(reserved | colliding)),
             f"metric/dimension names collide in the flattened EMF record "
             f"(reserved: {sorted(reserved)}, overlapping: {sorted(colliding)}) — "
             "metric and dimension names must be distinct and must not use "
-            "reserved EMF fields",
+            "reserved EMF or log-pipeline fields",
         ))
     for rollup in rollup_dimension_sets or []:
         missing = [k for k in rollup if k not in dims]
         if missing:
             problems.append((
-                ValueError,
+                MetricRecordError,
                 ",".join(missing),
                 f"rollup dimension(s) {missing} not present in the record",
             ))
     return problems
 
 
-def _raise_first(problems: List[_Problem]) -> None:
+def _raise_first(problems: list[_Problem]) -> None:
     exc_type, _, reason = problems[0]
     raise exc_type(reason)
 
@@ -223,13 +233,13 @@ class MetricsLogger:
         self,
         namespace: str,
         service: Optional[str] = None,
-        default_dimensions: Optional[Dict[str, Any]] = None,
+        default_dimensions: Optional[dict[str, Any]] = None,
         sink: Any = None,
         strict: bool = False,
     ):
         self.namespace = namespace
         self.strict = strict
-        self.default_dimensions: Dict[str, str] = {}
+        self.default_dimensions: dict[str, str] = {}
         if service:
             self.default_dimensions["Service"] = service
         if default_dimensions:
@@ -239,18 +249,18 @@ class MetricsLogger:
         if problems:
             _raise_first(problems)
         self._sink = sink
-        self._warned: Set[Tuple[str, str]] = set()
+        self._warned: set[tuple[str, str]] = set()
         logging.getLogger(_LOGGER_NAME).setLevel(logging.INFO)
 
     # -- core ---------------------------------------------------------------
 
     def emit(
         self,
-        metrics: Dict[str, float],
+        metrics: dict[str, float],
         unit: str = "Count",
-        dimensions: Optional[Dict[str, Any]] = None,
-        units: Optional[Dict[str, str]] = None,
-        rollup_dimension_sets: Optional[List[List[str]]] = None,
+        dimensions: Optional[dict[str, Any]] = None,
+        units: Optional[dict[str, str]] = None,
+        rollup_dimension_sets: Optional[list[list[str]]] = None,
     ) -> None:
         """
         Emit one EMF record carrying one or more metric values.
@@ -284,11 +294,11 @@ class MetricsLogger:
             self._reject(problems, metrics)
             return
 
-        dimension_sets: List[List[str]] = [list(dims.keys())] if dims else [[]]
+        dimension_sets: list[list[str]] = [list(dims.keys())] if dims else [[]]
         for rollup in rollup_dimension_sets or []:
             dimension_sets.append(list(rollup))
 
-        record: Dict[str, Any] = {
+        record: dict[str, Any] = {
             "_aws": {
                 "Timestamp": int(time.time() * 1000),
                 "CloudWatchMetrics": [
@@ -307,7 +317,7 @@ class MetricsLogger:
         }
         self._write(record)
 
-    def _reject(self, problems: List[_Problem], metrics: Dict[str, float]) -> None:
+    def _reject(self, problems: list[_Problem], metrics: dict[str, float]) -> None:
         if self.strict:
             _raise_first(problems)
         # Drop the record; warn once per (problem kind, name) per instance so
@@ -326,7 +336,7 @@ class MetricsLogger:
                 violation=exc_type.__name__,
             )
 
-    def _write(self, record: Dict[str, Any]) -> None:
+    def _write(self, record: dict[str, Any]) -> None:
         if self._sink is not None:
             # Test seam: raw EMF line, nothing else.
             self._sink.write(json.dumps(record, default=str) + "\n")
@@ -344,21 +354,21 @@ class MetricsLogger:
     # -- conveniences ---------------------------------------------------------
 
     def count(
-        self, name: str, value: float = 1, dimensions: Optional[Dict[str, Any]] = None
+        self, name: str, value: float = 1, dimensions: Optional[dict[str, Any]] = None
     ) -> None:
         """Counter. Use ``value=0`` to keep alarmable metrics alive."""
         self.emit({name: value}, unit="Count", dimensions=dimensions)
 
-    def zero(self, *names: str, dimensions: Optional[Dict[str, Any]] = None) -> None:
+    def zero(self, *names: str, dimensions: Optional[dict[str, Any]] = None) -> None:
         """Emit zero counts for rare conditions you alarm on — monitoring
         systems forget metrics that go silent, and zero counts enable
         "no data" alarms. No names, no record."""
         if not names:
             return
-        self.emit({name: 0 for name in names}, unit="Count", dimensions=dimensions)
+        self.emit(dict.fromkeys(names, 0), unit="Count", dimensions=dimensions)
 
     def timing(
-        self, name: str, milliseconds: float, dimensions: Optional[Dict[str, Any]] = None
+        self, name: str, milliseconds: float, dimensions: Optional[dict[str, Any]] = None
     ) -> None:
         """Latency value in milliseconds."""
         self.emit({name: milliseconds}, unit="Milliseconds", dimensions=dimensions)
@@ -382,16 +392,14 @@ class MetricsLogger:
         ``Dependency`` (+ optional ``Resource``) dimension — success emits
         ``Error: 0`` and vice versa, so no-data alarms work.
         """
-        dims: Dict[str, str] = {"Dependency": dependency}
+        dims: dict[str, str] = {"Dependency": dependency}
         if resource:
             dims["Resource"] = resource
         # The coarse per-dependency set — no Resource, no ErrorType — that
         # alarms and availability math target without enumerating either.
         # Both outcomes must record here: errors so the alarm sees them,
         # successes so Error: 0 keeps the series alive between failures.
-        dependency_set = [
-            k for k in {**self.default_dimensions, "Dependency": dependency}
-        ]
+        dependency_set = list({**self.default_dimensions, "Dependency": dependency})
         rollups = [dependency_set] if resource else None
         start = time.perf_counter()
         try:
