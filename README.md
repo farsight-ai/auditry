@@ -74,9 +74,8 @@ app = create_middleware(
     app,
     config=ObservabilityConfig(
         service_name="my-service",
-        # Set these explicitly — the implicit default is deprecated and will
-        # flip to False. False is the safe choice: request/response bodies
-        # are user-supplied content that field-name redaction cannot
+        # Set these explicitly. False is the safe choice: request/response
+        # bodies are user-supplied content that field-name redaction cannot
         # reliably scrub. Opt in deliberately, per service, only when you
         # know the bodies are safe to persist.
         log_request_body=False,
@@ -165,13 +164,13 @@ config = ObservabilityConfig(
     # Whether to log query parameters (default: True)
     log_query_params=True,
 
-    # Whether to log request bodies for all endpoints (default: True)
-    # Set to False for applications handling sensitive data
-    log_request_body=True,
+    # Whether to log request bodies. Bodies are user-supplied content that
+    # field-name redaction cannot reliably scrub; set False unless you know
+    # the bodies on every endpoint are safe to persist.
+    log_request_body=False,
 
-    # Whether to log response bodies for all endpoints (default: True)
-    # Set to False for applications returning sensitive data
-    log_response_body=True,
+    # Whether to log response bodies (same caveat as request bodies)
+    log_response_body=False,
 )
 
 # For FastAPI:
@@ -191,6 +190,14 @@ Request IDs are automatically handled:
 - **Generated if missing**: Creates a new UUID if no request ID provided
 - **Added to response**: Returns the request ID in the response header
 - **Included in logs**: Automatically included in all structured logs
+
+One nuance: `correlation_id` is an **optional** field of the root schema. It is
+present whenever a context is bound — every line inside a request, and every
+line inside a worker task that binds one — and absent on lines logged outside
+any context (import time, startup hooks). Consumers should treat the field as
+optional rather than assuming it on every line; auditry deliberately does not
+invent a per-line fallback ID, because each line would get a *different* ID,
+which falsely implies correlation.
 
 ### Using Correlation IDs in Your Code
 
@@ -649,6 +656,12 @@ config = ObservabilityConfig(
 
 When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead of the actual content, while still logging metadata like headers, status codes, and timing information.
 
+Set both flags explicitly. Bodies are user-supplied content, and field-name
+redaction cannot reliably scrub free text: a prompt, an uploaded document, or a
+generated completion has no field names to match on. `False` is the safe
+choice; an explicit `True` is a deliberate, per-service decision. Leaving either
+flag implicit raises a `DeprecationWarning`.
+
 ### Exception Details
 
 Error logs are the single most likely place for customer content to leak.
@@ -657,7 +670,7 @@ failure — a parse error quotes the document, a validation error quotes the fie
 value, an SDK error quotes the payload. Redaction cannot help, because a
 traceback has no field names to match.
 
-So as of 0.4.0, a failed request logs the exception **class** and the
+A failed request logs the exception **class** and the
 correlation ID, and nothing else:
 
 ```json
@@ -793,6 +806,29 @@ async def stream_data():
 
 Note: Excluded paths still get correlation IDs but no logging.
 
+### Health Probes Are Excluded by Default
+
+These paths are merged into `excluded_paths` automatically:
+
+```text
+/health  /healthz  /livez  /live  /ready  /readyz  /api/health
+```
+
+A load balancer probing every task every 15–30 seconds dominates log volume in
+most deployed services, and those lines carry no information. Probes still
+receive the correlation-ID header — they just stop producing request/response
+log lines. Opt out with:
+
+```python
+config = ObservabilityConfig(
+    service_name="my-service",
+    include_default_excluded_paths=False,
+)
+```
+
+Log-derived request counts exclude probe traffic; size any low-log-volume
+alarm on real requests, not on probes.
+
 ## Best Practices
 
 ### 1. Configure Logging Early
@@ -811,31 +847,44 @@ app = FastAPI()
 
 ### 2. Use Structured Logging
 
-Always use `get_logger(__name__)` instead of standard Python logging:
+Prefer `get_logger(__name__)` over standard Python logging:
 
 ```python
 from auditry import get_logger
 
 logger = get_logger(__name__)
 
-# Good - structured with correlation ID
+# Good - structured key/value fields, queryable individually
 logger.info("Processing payment", amount=100.50, currency="USD")
 
-# Bad - loses structured data
+# Works, but flat - the line still carries the JSON root schema
+# (timestamp, service, correlation ID), but the data is baked into
+# the message string instead of being queryable fields
 import logging
-logging.info("Processing payment")
+logging.info("Processing payment amount=%s", 100.50)
 ```
+
+Plain-stdlib records — including those from libraries you don't control
+(uvicorn, boto3) — are rendered through the same processor chain, so every
+line on stdout is schema-carrying JSON either way. `get_logger` is about
+making *your* fields structured and queryable.
 
 ### 3. Propagate Correlation IDs
 
-When calling downstream services, always pass the correlation ID:
+When calling downstream services, always pass the correlation ID —
+`outbound_headers()` builds the headers and guarantees an ID is present
+(binding a fresh one if none exists yet), so don't assemble them by hand:
 
 ```python
-from auditry import get_correlation_id
+from auditry import outbound_headers
 
-correlation_id = get_correlation_id()
-headers = {"X-Request-ID": correlation_id}  # Use your org's header name
-response = await client.get(url, headers=headers)
+response = await client.get(url, headers=outbound_headers())
+
+# If your org uses a different header name, or you have headers already:
+response = await client.get(
+    url,
+    headers=outbound_headers(header_name="X-Trace-ID", extra={"Accept": "application/json"}),
+)
 ```
 
 ### 4. Customize for Your Organization
