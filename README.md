@@ -367,14 +367,9 @@ Two exceptions to that, both deliberate:
 - **`default_dimensions` are validated at construction and always raise**
   (`ForbiddenDimensionError`). That runs at startup, not on the hot path, and
   failing fast there is cheap.
-- **`strict=True`** makes emit-path violations raise too. Turn it on in tests
-  and local development, so a PII-named dimension fails the moment it is
-  written rather than showing up as a warning in production logs:
-
-  ```python
-  metrics = MetricsLogger(namespace="MyOrg/MyService", service="my-service",
-                          strict=os.environ.get("ENVIRONMENT") != "prod")
-  ```
+- **Strict mode** makes emit-path violations raise too — but only where
+  auditry knows it is not production, and you don't set it per call site. See
+  [Strict Mode: Loud in Non-Production](#strict-mode-loud-in-non-production).
 
 Dimension values: numbers and booleans are ordinary values and are coerced with
 `str()` — `{"Attempt": 3}` is a retry counter, not a privacy violation. Anything
@@ -385,7 +380,39 @@ free-text value is dropped as user content.
 
 There is also a hard cap of 8 dimensions per record, since every distinct
 dimension set is a separately billable metric. Over the cap is dropped like any
-other violation (`ValueError` under `strict=True`).
+other violation (`ValueError` in strict mode).
+
+### Strict Mode: Loud in Non-Production
+
+The production rule is absolute: **instrumentation never fails the unit of work
+it measures.** But a PII-named dimension that only ever produces a warning in a
+production log is a mistake you find late. So auditry has one process-wide
+**strict mode**, in which the same failures raise — a dropped metric becomes a
+`ForbiddenDimensionError` / `TypeError` / `ValueError` at the call site, and a
+broken trace handler re-raises instead of being swallowed.
+
+You don't set it per call site. `configure_logging()` resolves it once, from
+the environment you already pass:
+
+```python
+configure_logging(service="my-service", environment=env_stage)
+#  "local", "dev", "sandbox", "plat-sandbox", "test", "ci", "staging" -> strict
+#  "prod", "customer-prod", anything unrecognized, or unset          -> production-safe
+```
+
+Only a **known non-production name** turns strict on: `local`, `local-*`, `dev`,
+`dev-*`, `development`, `sandbox`, `plat-sandbox`, `test`, `testing`, `ci`, `qa`,
+`staging`, `stage`. Everything else — including a dedicated customer account
+whose stage name carries no hint, and a process that never set an environment —
+is treated as production. Deriving the other way round ("strict unless it says
+prod") is exactly how a customer account ends up with raising instrumentation.
+
+Overrides, highest first: `configure_logging(strict=True)` (or `False`), then
+the `AUDITRY_STRICT=1` (or `0`) environment variable, then the derived value.
+`MetricsLogger(strict=...)` still overrides per instance, and `auditry.is_strict()`
+tells you what was resolved. A test suite that calls
+`configure_logging(environment="test")` gets strict mode for free — which is
+where you want a bad dimension to fail.
 
 ### Rollup Dimension Sets
 
@@ -412,7 +439,7 @@ metrics.emit(
 ```
 
 Rollup names must already be present on the record; otherwise the record is
-dropped with a warning (`ValueError` under `strict=True`).
+dropped with a warning (`ValueError` in strict mode).
 
 ## User Tracking
 
@@ -665,7 +692,9 @@ name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
 fields under the root schema (`message`, `correlation_id`, `service`, …). Render
 the tuple to text yourself if you need text. If the handler raises, auditry
 swallows it and marks the line `trace_handler_error: true` rather than letting
-your logging path break the request.
+your logging path break the request — in production. In
+[strict mode](#strict-mode-loud-in-non-production) it re-raises, so a broken
+handler fails your tests instead of silently dropping traces.
 
 This discipline applies to **auditry's own records** — the middleware's
 request/response lines and anything logged through `get_logger()`. Plain stdlib

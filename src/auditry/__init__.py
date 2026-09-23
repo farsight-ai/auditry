@@ -28,8 +28,8 @@ Basic Usage:
 """
 
 from .correlation import get_correlation_id
-from .logging_config import configure_logging, get_logger, set_trace_handler
 from .errors import AuditryError
+from .logging_config import configure_logging, get_logger, is_strict, set_trace_handler
 from .metrics import ForbiddenDimensionError, MetricsLogger
 from .models import BusinessEventConfig, ObservabilityConfig
 from .propagation import (
@@ -53,6 +53,7 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "set_trace_handler",
+    "is_strict",
     # Correlation & propagation
     "get_correlation_id",
     "bind_correlation_id",
