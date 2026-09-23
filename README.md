@@ -212,24 +212,256 @@ async def get_user(user_id: str):
 
 ### Propagating to Downstream Services
 
+`outbound_headers()` builds the headers for you, generating an ID if none is
+bound yet so an outbound call is never made without one:
+
 ```python
 import httpx
-from auditry import get_correlation_id
+from auditry import outbound_headers
 
 @app.get("/proxy")
 async def proxy_request():
-    # Get the current correlation ID
-    correlation_id = get_correlation_id()
-
-    # Pass it to downstream services
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://downstream-service.com/api/data",
-            headers={"X-Request-ID": correlation_id}  # Use your org's header name
+            headers=outbound_headers(),          # {"X-Request-ID": "<id>"}
         )
 
     return response.json()
 ```
+
+The header name defaults to your configured `correlation_id_header` (seeded when
+`create_middleware` runs), so a service that customizes the inbound header sends
+the same name outbound. Pass `extra=` to merge with headers you were already
+sending, and `header_name=` to override the name for one call. Attach these to third-party API
+calls too, wherever the SDK accepts custom headers — it makes the vendor's
+audit trail line up with yours.
+
+## Correlation Propagation Beyond HTTP
+
+The middleware binds the correlation ID for HTTP requests. Everything outside
+that request cycle — queue workers, schedulers, cron jobs, scripts — has to bind
+one itself, **before the first log line**, or those logs correlate with nothing.
+
+### Workers and Background Jobs
+
+```python
+from auditry import configure_logging, get_logger, with_correlation
+
+# Workers too, not just the API. version falls back to SERVICE_VERSION if unset.
+configure_logging(service="my-worker", version="1.4.2", environment="prod")
+logger = get_logger(__name__)
+
+@with_correlation
+async def process_job(ctx, job_spec, correlation_id=None):
+    # The ID is bound before this body runs, so every line below carries it.
+    logger.info("job started", job_type=job_spec["type"])
+```
+
+The decorator takes the ID from a `correlation_id` keyword argument when the
+producer passes one, and generates a fresh UUID4 otherwise. It leaves the kwarg
+in place if your function accepts it and strips it if not, so you can decorate
+functions that never declared it.
+
+If a decorated handler runs while an ID is already bound in the context (the
+consumer loop called `bind_from_sqs_message` first), it continues that trace
+rather than starting a new one — an ID in flight is propagated, never replaced.
+
+When the unit of work isn't a function, `bound_correlation_id()` does the same
+thing as a context manager — binds for the block, restores the previous context
+after, so a long-lived worker never logs a finished job's ID against the next:
+
+```python
+from auditry import bound_correlation_id, extract_correlation_id
+
+for message in receive():
+    with bound_correlation_id(extract_correlation_id(message)):
+        logger.info("processing")        # carries this message's ID
+# nothing after the block does
+```
+
+`bind_correlation_id(value)` is the **sticky** form — it binds and leaves it
+bound for the rest of the context's life. Use it at a true edge (a script, a
+one-shot process, a startup hook), not per job in a long-lived worker.
+`ensure_correlation_id()` returns the current ID, binding a fresh one if unset.
+
+### Queue Hops (SQS / SNS)
+
+```python
+from auditry import bind_from_sqs_message, sqs_message_attributes
+
+# Producer
+sqs.send_message(
+    QueueUrl=queue_url,
+    MessageBody=json.dumps(job),
+    MessageAttributes=sqs_message_attributes(),
+)
+
+# Consumer — call this BEFORE the first log line
+for message in response["Messages"]:
+    bind_from_sqs_message(message)
+    logger.info("processing message")
+```
+
+`bind_from_sqs_message` falls back to a fresh ID when the attribute is absent,
+so a consumer never logs without one.
+
+IDs that auditry *generates* are always random UUID4s — opaque, never derived
+from user data. Inbound IDs are propagated verbatim (that is the point of
+propagation), so the randomness guarantee holds end-to-end only when the
+edge service generated the ID. Don't accept correlation IDs from untrusted
+callers into systems that assume opacity.
+
+## Metrics (CloudWatch EMF)
+
+`MetricsLogger` emits CloudWatch [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format.html):
+a metric is a structured JSON log line that CloudWatch extracts at ingestion.
+That means **no AWS SDK dependency, no network call on the request path, and no
+credentials to manage** — metrics ride the log driver you already have.
+
+```python
+from auditry import MetricsLogger
+
+metrics = MetricsLogger(namespace="MyOrg/MyService", service="my-service")
+
+metrics.count("JobsSubmitted")                       # +1
+metrics.count("JobsSubmitted", 5)                    # +5
+metrics.timing("RenderLatency", 42.7)                # milliseconds
+metrics.zero("RateLimited")                          # see below
+```
+
+### Metrics Ride the Log Pipeline
+
+Once `configure_logging()` has run, a metric record is emitted through the same
+pipeline as every other line — so alongside the EMF payload it carries the root
+schema (`timestamp`, `service`, `version`, `environment`) **and the
+`correlation_id`** of the request that produced it. CloudWatch ignores the extra
+keys when extracting the metric; you get to tie a latency spike back to the
+exact request in Logs Insights. The metrics logger's level is pinned to INFO, so
+a `WARNING` root level can't silently discard metrics. If logging was never
+configured (a script, a bare test), records fall back to a raw single-line write
+on stdout — EMF extraction never depends on logging setup.
+
+### Timing Dependency Calls
+
+`dependency_call()` times a call and records success or failure, with the
+exception class as an `ErrorType` dimension:
+
+```python
+with metrics.dependency_call("dynamodb", resource="jobs-table"):
+    table.get_item(Key={"id": job_id})
+```
+
+That emits `Latency` (ms), `Success`, and `Error` under a `Dependency`
+(plus optional `Resource`) dimension. A success emits `Error: 0` and a failure
+emits `Success: 0`, so neither series ever goes silent. The exception
+propagates unchanged — this measures, it doesn't swallow.
+
+### Why `zero()` Exists
+
+Monitoring systems forget metrics that stop reporting. If you only emit
+`RateLimited` when rate limiting happens, then "no data" and "no problem" look
+identical, and an alarm on that metric can never fire reliably. Emitting an
+explicit zero on the healthy path keeps the series alive so "no data" alarms
+work.
+
+### Dimensions Are Guarded
+
+Dimension names are validated against a forbidden-pattern list (`userid`,
+`email`, `filename`, `prompt`, `message`, and similar). A match means the
+record is **dropped, not emitted** — and one warning is logged per offending
+name, so a hot path with a bad dimension can't turn into a log storm:
+
+```python
+metrics.count("Uploads", dimensions={"user_email": email})   # dropped + warned
+metrics.count("Uploads", dimensions={"FileType": "pdf"})     # fine
+```
+
+Metrics stores are unencrypted, broadly readable, and not selectively erasable —
+you cannot delete one user's data out of a metric after the fact. That is why
+the guard exists. But instrumentation must never break the code it measures:
+a retry counter that 500s a request is a liability, not observation. So on the
+emit path a violation is a dropped metric and a warning, never an exception in
+your handler.
+
+Two exceptions to that, both deliberate:
+
+- **`default_dimensions` are validated at construction and always raise**
+  (`ForbiddenDimensionError`). That runs at startup, not on the hot path, and
+  failing fast there is cheap.
+- **Strict mode** makes emit-path violations raise too — but only where
+  auditry knows it is not production, and you don't set it per call site. See
+  [Strict Mode: Loud in Non-Production](#strict-mode-loud-in-non-production).
+
+Dimension values: numbers and booleans are ordinary values and are coerced with
+`str()` — `{"Attempt": 3}` is a retry counter, not a privacy violation. Anything
+else (a dict, `None`) is a `TypeError`, kept distinct from
+`ForbiddenDimensionError` so "you passed the wrong type" never reads as "you
+leaked PII". Values must be short, single-line identifiers (≤128 chars); a
+free-text value is dropped as user content.
+
+There is also a hard cap of 8 dimensions per record, since every distinct
+dimension set is a separately billable metric. Over the cap is dropped like any
+other violation (`ValueError` in strict mode).
+
+### Strict Mode: Loud in Non-Production
+
+The production rule is absolute: **instrumentation never fails the unit of work
+it measures.** But a PII-named dimension that only ever produces a warning in a
+production log is a mistake you find late. So auditry has one process-wide
+**strict mode**, in which the same failures raise — a dropped metric becomes a
+`ForbiddenDimensionError` / `TypeError` / `ValueError` at the call site, and a
+broken trace handler re-raises instead of being swallowed.
+
+You don't set it per call site. `configure_logging()` resolves it once, from
+the environment you already pass:
+
+```python
+configure_logging(service="my-service", environment=env_stage)
+#  "local", "dev", "sandbox", "plat-sandbox", "test", "ci", "staging" -> strict
+#  "prod", "customer-prod", anything unrecognized, or unset          -> production-safe
+```
+
+Only a **known non-production name** turns strict on: `local`, `local-*`, `dev`,
+`dev-*`, `development`, `sandbox`, `plat-sandbox`, `test`, `testing`, `ci`, `qa`,
+`staging`, `stage`. Everything else — including a dedicated customer account
+whose stage name carries no hint, and a process that never set an environment —
+is treated as production. Deriving the other way round ("strict unless it says
+prod") is exactly how a customer account ends up with raising instrumentation.
+
+Overrides, highest first: `configure_logging(strict=True)` (or `False`), then
+the `AUDITRY_STRICT=1` (or `0`) environment variable, then the derived value.
+`MetricsLogger(strict=...)` still overrides per instance, and `auditry.is_strict()`
+tells you what was resolved. A test suite that calls
+`configure_logging(environment="test")` gets strict mode for free — which is
+where you want a bad dimension to fail.
+
+### Rollup Dimension Sets
+
+An error metric dimensioned by error type is unalarmable on its own: an alarm on
+the coarse series finds no data, and you cannot enumerate every exception class
+a dependency might raise. So `dependency_call()` records each error under
+**both** `[Service, Dependency, ErrorType]` and `[Service, Dependency]` — one
+record, no double counting within a set. Alarm on the coarse series, then use
+the fine one to see which error type drove it.
+
+When `resource=` is passed, the fine set gains a `Resource` dimension but the
+rollup stays `[Service, Dependency]`, and successes roll up there too — so the
+per-dependency alarm series always has data (`Error: 0` between failures), no
+matter how the calls are scoped.
+
+`emit()` exposes the same mechanism directly:
+
+```python
+metrics.emit(
+    {"Error": 1},
+    dimensions={"Dependency": "s3", "ErrorType": "ClientError"},
+    rollup_dimension_sets=[["Dependency"]],   # also record under [Service, Dependency]
+)
+```
+
+Rollup names must already be present on the record; otherwise the record is
+dropped with a warning (`ValueError` in strict mode).
 
 ## User Tracking
 
@@ -482,7 +714,9 @@ name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
 fields under the root schema (`message`, `correlation_id`, `service`, …). Render
 the tuple to text yourself if you need text. If the handler raises, auditry
 swallows it and marks the line `trace_handler_error: true` rather than letting
-your logging path break the request.
+your logging path break the request — in production. In
+[strict mode](#strict-mode-loud-in-non-production) it re-raises, so a broken
+handler fails your tests instead of silently dropping traces.
 
 This discipline applies to **auditry's own records** — the middleware's
 request/response lines and anything logged through `get_logger()`. Plain stdlib
