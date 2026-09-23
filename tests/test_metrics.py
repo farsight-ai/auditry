@@ -139,8 +139,19 @@ class TestDimensionGuard:
 
     @pytest.mark.parametrize(
         "bad_key",
-        ["userId", "user_id", "USER-ID", "email", "userEmail", "fileName",
-         "file_name", "documentTitle", "prompt", "objectKey", "full_name"],
+        [
+            "userId",
+            "user_id",
+            "USER-ID",
+            "email",
+            "userEmail",
+            "fileName",
+            "file_name",
+            "documentTitle",
+            "prompt",
+            "objectKey",
+            "full_name",
+        ],
     )
     def test_forbidden_dimension_drops_record(self, bad_key):
         logger, sink = make_logger()
@@ -440,8 +451,19 @@ class TestReservedPipelineKeys:
     the schema processors. Both are rejected before the record is built."""
 
     @pytest.mark.parametrize(
-        "name", ["event", "message", "level", "timestamp", "service", "version",
-                 "environment", "correlation_id", "exc_info", "_aws"],
+        "name",
+        [
+            "event",
+            "message",
+            "level",
+            "timestamp",
+            "service",
+            "version",
+            "environment",
+            "correlation_id",
+            "exc_info",
+            "_aws",
+        ],
     )
     def test_reserved_metric_name_is_dropped_not_raised(self, name):
         logger, sink = make_logger()

@@ -46,6 +46,13 @@ def last_line(capsys):
     return json.loads(out[-1])
 
 
+def log_caught_exception(logger):
+    try:
+        raise ValueError("x")
+    except ValueError:
+        logger.error("failed", exc_info=True)
+
+
 class TestRootSchema:
     """Every line carries the root schema."""
 
@@ -287,8 +294,22 @@ class TestStrictPolicy:
 
     @pytest.mark.parametrize(
         "env",
-        ["local", "local-chris", "dev", "dev-feature-x", "development", "sandbox",
-         "plat-sandbox", "test", "testing", "ci", "qa", "staging", "stage", "DEV"],
+        [
+            "local",
+            "local-chris",
+            "dev",
+            "dev-feature-x",
+            "development",
+            "sandbox",
+            "plat-sandbox",
+            "test",
+            "testing",
+            "ci",
+            "qa",
+            "staging",
+            "stage",
+            "DEV",
+        ],
     )
     def test_known_non_production_names_are_strict(self, env):
         configure_logging(service="s", environment=env)
@@ -331,10 +352,7 @@ class TestStrictPolicy:
         set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
         logger, _ = configure_and_capture(capsys, service="s", environment="test")
         with pytest.raises(RuntimeError, match="handler broke"):
-            try:
-                raise ValueError("x")
-            except ValueError:
-                logger.error("failed", exc_info=True)
+            log_caught_exception(logger)
 
     def test_failing_trace_handler_is_swallowed_in_production(self, capsys):
         set_trace_handler(lambda *a: (_ for _ in ()).throw(RuntimeError("handler broke")))
