@@ -9,6 +9,7 @@ from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
+from ..propagation import _set_correlation_header
 from ..path_matcher import should_exclude_path
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
 
@@ -160,6 +161,7 @@ class FastAPIMiddleware:
 def create_middleware(app, config: ObservabilityConfig):
     """Create and attach observability middleware to FastAPI app."""
     _set_config_service(config.service_name)
+    _set_correlation_header(config.correlation_id_header)
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)

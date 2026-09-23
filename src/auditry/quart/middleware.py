@@ -9,6 +9,7 @@ from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
+from ..propagation import _set_correlation_header
 from ..path_matcher import should_exclude_path
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
 
@@ -212,6 +213,7 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         ```
     """
     _set_config_service(config.service_name)
+    _set_correlation_header(config.correlation_id_header)
 
     # Create and register the middleware
     QuartMiddleware(app, config)
