@@ -1,5 +1,20 @@
+import warnings
 from typing import Optional, Dict, List, Union
 from pydantic import BaseModel, Field, field_validator
+
+# Health/liveness probes are excluded from request/response logging by
+# default (they still get the correlation-ID header). A load balancer pings
+# every task every 15-30s; unsuppressed, that noise inflates log cost and
+# buries real errors.
+DEFAULT_EXCLUDED_PATHS: List[str] = [
+    "/health",
+    "/healthz",
+    "/livez",
+    "/live",
+    "/ready",
+    "/readyz",
+    "/api/health",
+]
 
 
 class BusinessEventConfig(BaseModel):
@@ -71,11 +86,22 @@ class ObservabilityConfig(BaseModel):
     log_query_params: bool = Field(default=True, description="Whether to log query parameters")
     log_request_body: bool = Field(
         default=True,
-        description="Whether to log request bodies for the application"
+        description=(
+            "Whether to log request bodies. NOTE: request bodies are "
+            "user-supplied content that field-name redaction cannot reliably "
+            "scrub (free text, documents, prompts). The default will change to "
+            "False in a future release; services handling sensitive content "
+            "should set False now (or scope body logging to safe endpoints)."
+        )
     )
     log_response_body: bool = Field(
         default=True,
-        description="Whether to log response bodies for the application"
+        description=(
+            "Whether to log response bodies. NOTE: response bodies can carry "
+            "sensitive generated/user content. The default will change to "
+            "False in a future release; services handling sensitive content "
+            "should set False now."
+        )
     )
     log_exception_messages: bool = Field(
         default=False,
@@ -86,12 +112,56 @@ class ObservabilityConfig(BaseModel):
             "via auditry.set_trace_handler to a gated destination."
         )
     )
+    include_default_excluded_paths: bool = Field(
+        default=True,
+        description=(
+            "Merge DEFAULT_EXCLUDED_PATHS (health/liveness probes) into "
+            "excluded_paths (health-check log-spam suppression). Set False to "
+            "opt out and manage exclusions entirely yourself."
+        )
+    )
     excluded_paths: Optional[Union[List[str], Dict[str, List[str]]]] = Field(
         default=None,
         description=(
             "Paths to exclude from observability middleware. "
             "Can be a list of path patterns (e.g., ['/health', '/metrics', '/stream*']) "
             "or a dict mapping HTTP methods to paths (e.g., {'GET': ['/health'], 'POST': ['/stream*']}). "
-            "Supports wildcards (*) for pattern matching."
+            "Supports wildcards (*) for pattern matching. Health/liveness probe "
+            "paths are merged in by default (see include_default_excluded_paths)."
         )
     )
+
+    def model_post_init(self, __context) -> None:
+        # Deprecation notice: body logging will default to OFF in a future
+        # release. Warn only when the service relies on the implicit default —
+        # an explicit True is a deliberate, documented choice.
+        implicit = [
+            f
+            for f in ("log_request_body", "log_response_body")
+            if f not in self.model_fields_set and getattr(self, f)
+        ]
+        if implicit:
+            warnings.warn(
+                f"auditry: {' and '.join(implicit)} default to True today but "
+                "will default to False in a future release (request/response "
+                "bodies are user-supplied content that field-name redaction "
+                "cannot reliably scrub). Set the flag(s) explicitly — False "
+                "for services handling sensitive content.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        # Merge the default health-probe exclusions.
+        if self.include_default_excluded_paths:
+            if self.excluded_paths is None:
+                self.excluded_paths = list(DEFAULT_EXCLUDED_PATHS)
+            elif isinstance(self.excluded_paths, list):
+                merged = list(self.excluded_paths)
+                merged += [p for p in DEFAULT_EXCLUDED_PATHS if p not in merged]
+                self.excluded_paths = merged
+            elif isinstance(self.excluded_paths, dict):
+                # Merge into the "*" (all-methods) key so dict-form configs get
+                # the same any-method exclusion as the list form — probes are
+                # not always GET (HEAD is common for ELB health checks).
+                star_paths = list(self.excluded_paths.get("*", []))
+                star_paths += [p for p in DEFAULT_EXCLUDED_PATHS if p not in star_paths]
+                self.excluded_paths = {**self.excluded_paths, "*": star_paths}

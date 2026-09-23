@@ -62,9 +62,12 @@ def quart_app_with_method_exclusions():
     """Create a Quart app with method-specific path exclusions."""
     app = Quart(__name__)
 
-    # Configure with method-specific excluded paths
+    # Configure with method-specific excluded paths. The default health-probe
+    # exclusions are disabled: they merge into "*" and would exclude /health
+    # for every method, hiding the method-specific behavior under test.
     config = ObservabilityConfig(
         service_name="test-method-exclusion",
+        include_default_excluded_paths=False,
         excluded_paths={
             'GET': ['/health', '/metrics'],
             'POST': ['/webhook/*'],

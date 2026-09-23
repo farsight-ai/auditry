@@ -2,6 +2,7 @@
 
 import json
 import logging
+import warnings
 
 import pytest
 import structlog
@@ -16,6 +17,8 @@ from auditry.logging_config import (
     is_strict,
     set_trace_handler,
 )
+from auditry.models import DEFAULT_EXCLUDED_PATHS
+from auditry.path_matcher import should_exclude_path
 
 
 @pytest.fixture(autouse=True)
@@ -174,6 +177,60 @@ class TestErrorDiscipline:
 
 
 class TestConfigDefaults:
+    def test_implicit_body_default_warns(self):
+        with pytest.warns(DeprecationWarning, match="field-name redaction"):
+            ObservabilityConfig(service_name="svc")
+
+    def test_explicit_body_flags_do_not_warn(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            ObservabilityConfig(
+                service_name="svc", log_request_body=False, log_response_body=False
+            )
+
+    def test_default_health_paths_merged(self):
+        cfg = ObservabilityConfig(
+            service_name="svc", log_request_body=False, log_response_body=False
+        )
+        for path in DEFAULT_EXCLUDED_PATHS:
+            assert path in cfg.excluded_paths
+
+    def test_default_health_paths_merge_with_user_list(self):
+        cfg = ObservabilityConfig(
+            service_name="svc",
+            log_request_body=False,
+            log_response_body=False,
+            excluded_paths=["/metrics"],
+        )
+        assert "/metrics" in cfg.excluded_paths
+        assert "/healthz" in cfg.excluded_paths
+
+    def test_default_health_paths_merge_into_wildcard_for_dict_form(self):
+        """Dict-form configs get the same any-method probe exclusion as the
+        list form: defaults merge into the "*" key, not GET — HEAD probes
+        (common for ELB health checks) must be excluded too."""
+        cfg = ObservabilityConfig(
+            service_name="svc",
+            log_request_body=False,
+            log_response_body=False,
+            excluded_paths={"POST": ["/api/stream"]},
+        )
+        assert cfg.excluded_paths["POST"] == ["/api/stream"]
+        for path in DEFAULT_EXCLUDED_PATHS:
+            assert path in cfg.excluded_paths["*"]
+        assert should_exclude_path("/healthz", "HEAD", cfg.excluded_paths)
+        assert should_exclude_path("/healthz", "GET", cfg.excluded_paths)
+        assert not should_exclude_path("/api/stream", "GET", cfg.excluded_paths)
+
+    def test_default_health_paths_opt_out(self):
+        cfg = ObservabilityConfig(
+            service_name="svc",
+            log_request_body=False,
+            log_response_body=False,
+            include_default_excluded_paths=False,
+        )
+        assert cfg.excluded_paths is None
+
     def test_exception_messages_off_by_default(self):
         cfg = ObservabilityConfig(
             service_name="svc", log_request_body=False, log_response_body=False
