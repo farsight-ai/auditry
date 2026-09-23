@@ -262,3 +262,41 @@ class TestDecoratorScoping:
 
         assert task("x", correlation_id="kw-1") == "kw-1"
         assert seen["correlation_id"] == "kw-1"
+
+
+class TestExtractCorrelationId:
+    """The pure extractor the consumer-loop docs rely on: reads, never binds."""
+
+    def test_extracts_and_binds_nothing(self):
+        from auditry.propagation import extract_correlation_id
+
+        msg = {"MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-1"}}}
+        assert extract_correlation_id(msg) == "q-1"
+        assert correlation_id.get() is None
+
+    def test_accepts_lambda_event_casing(self):
+        from auditry.propagation import extract_correlation_id
+
+        msg = {"messageAttributes": {"correlation_id": {"dataType": "String", "stringValue": "q-2"}}}
+        assert extract_correlation_id(msg) == "q-2"
+
+    def test_missing_attribute_is_none(self):
+        from auditry.propagation import extract_correlation_id
+
+        assert extract_correlation_id({"Body": "{}"}) is None
+
+    def test_documented_consumer_loop(self):
+        from auditry.propagation import extract_correlation_id
+
+        bind_correlation_id("outer")
+        msg = {"MessageAttributes": {"correlation_id": {"DataType": "String", "StringValue": "q-3"}}}
+        with bound_correlation_id(extract_correlation_id(msg)):
+            assert correlation_id.get() == "q-3"
+        assert correlation_id.get() == "outer"
+
+
+def test_generated_ids_match_the_middleware_shape():
+    # asgi-correlation-id mints uuid4().hex; ours should look the same.
+    cid = bind_correlation_id()
+    assert len(cid) == 32 and "-" not in cid
+    assert uuid.UUID(cid).version == 4

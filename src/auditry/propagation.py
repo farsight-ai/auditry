@@ -22,7 +22,8 @@ import functools
 import inspect
 import uuid
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, Optional, TypeVar
+from collections.abc import Iterator
+from typing import Any, Callable, Optional, TypeVar
 
 from asgi_correlation_id import correlation_id
 
@@ -32,6 +33,7 @@ __all__ = [
     "ensure_correlation_id",
     "outbound_headers",
     "sqs_message_attributes",
+    "extract_correlation_id",
     "bind_from_sqs_message",
     "with_correlation",
 ]
@@ -46,6 +48,12 @@ SQS_ATTRIBUTE_NAME = "correlation_id"
 _config_header: Optional[str] = None
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _new_id() -> str:
+    # Same shape as the ID the ASGI middleware generates (asgi-correlation-id
+    # uses uuid4().hex), so IDs look alike whichever side minted them.
+    return uuid.uuid4().hex
 
 
 def _set_correlation_header(name: Optional[str]) -> None:
@@ -78,7 +86,7 @@ def bind_correlation_id(value: Optional[str] = None) -> str:
 
     Returns the bound ID.
     """
-    cid = value or str(uuid.uuid4())
+    cid = value or _new_id()
     correlation_id.set(cid)
     return cid
 
@@ -91,7 +99,7 @@ def bound_correlation_id(value: Optional[str] = None) -> Iterator[str]:
 
     ```python
     for message in receive():
-        with bound_correlation_id(extract_id(message)):
+        with bound_correlation_id(extract_correlation_id(message)):
             logger.info("processing")   # carries this message's ID
     # ... and nothing after the block does.
     ```
@@ -100,7 +108,7 @@ def bound_correlation_id(value: Optional[str] = None) -> Iterator[str]:
     Yields the bound ID. This is what ``with_correlation`` does for a task
     function; use this form when the unit of work is not a function.
     """
-    cid = value or str(uuid.uuid4())
+    cid = value or _new_id()
     token = correlation_id.set(cid)
     try:
         yield cid
@@ -115,8 +123,8 @@ def ensure_correlation_id() -> str:
 
 def outbound_headers(
     header_name: Optional[str] = None,
-    extra: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
+    extra: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
     """
     Headers for an outbound HTTP call, carrying the correlation ID.
 
@@ -138,8 +146,8 @@ def outbound_headers(
 
 
 def sqs_message_attributes(
-    existing: Optional[Dict[str, Dict[str, str]]] = None,
-) -> Dict[str, Dict[str, str]]:
+    existing: Optional[dict[str, dict[str, str]]] = None,
+) -> dict[str, dict[str, str]]:
     """
     SQS/SNS MessageAttributes carrying the correlation ID.
 
@@ -159,7 +167,16 @@ def sqs_message_attributes(
     return attrs
 
 
-def bind_from_sqs_message(message: Dict[str, Any]) -> str:
+def extract_correlation_id(message: dict[str, Any]) -> Optional[str]:
+    """The correlation ID carried by a received SQS/SNS message, or ``None``.
+    Binds nothing — pair it with ``bound_correlation_id()`` in a consumer loop.
+    """
+    attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
+    attr = attrs.get(SQS_ATTRIBUTE_NAME) or {}
+    return attr.get("StringValue") or attr.get("stringValue")
+
+
+def bind_from_sqs_message(message: dict[str, Any]) -> str:
     """
     Extract the correlation ID from a received SQS message and bind it —
     call this BEFORE the consumer's first log line.
@@ -169,10 +186,7 @@ def bind_from_sqs_message(message: Dict[str, Any]) -> str:
     ``bind_correlation_id``); in a long-lived consumer, wrap each message in
     ``bound_correlation_id(...)`` with the extracted value instead.
     """
-    attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
-    attr = attrs.get(SQS_ATTRIBUTE_NAME) or {}
-    value = attr.get("StringValue") or attr.get("stringValue")
-    return bind_correlation_id(value)
+    return bind_correlation_id(extract_correlation_id(message))
 
 
 def with_correlation(func: F) -> F:
@@ -202,8 +216,8 @@ def with_correlation(func: F) -> F:
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
     )
 
-    def _bind(kwargs: Dict[str, Any]) -> Any:
-        cid = kwargs.get("correlation_id") or correlation_id.get() or str(uuid.uuid4())
+    def _bind(kwargs: dict[str, Any]) -> Any:
+        cid = kwargs.get("correlation_id") or correlation_id.get() or _new_id()
         token = correlation_id.set(cid)
         if not accepts_kwarg:
             kwargs.pop("correlation_id", None)
