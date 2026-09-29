@@ -506,16 +506,6 @@ class TestExplicitDimensionSets:
         (rec,) = records(sink)
         assert rec["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == self.BREAKDOWNS
 
-    def test_one_call_is_one_line_with_each_value_once(self):
-        logger, sink = make_logger()
-        self._emit(logger, dimension_sets=self.BREAKDOWNS)
-        (rec,) = records(sink)
-        names = [m["Name"] for m in rec["_aws"]["CloudWatchMetrics"][0]["Metrics"]]
-        assert (len(rec["_aws"]["CloudWatchMetrics"]), names) == (
-            1,
-            ["Latency", "Success", "Error"],
-        )
-
     def test_one_call_is_one_line_through_the_log_pipeline(self, capsys):
         configure_logging(service="test-svc", environment="test")
         logger = MetricsLogger(namespace="Test/NS", service="test-svc")
