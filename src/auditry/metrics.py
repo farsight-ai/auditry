@@ -197,6 +197,7 @@ def _record_problems(
     dims: dict[str, Any],
     metrics: dict[str, float],
     rollup_dimension_sets: Optional[list[list[str]]],
+    dimension_sets: Optional[list[list[str]]] = None,
 ) -> list[_Problem]:
     """Problems with the record as a whole, beyond the dimensions."""
     problems: list[_Problem] = []
@@ -227,6 +228,60 @@ def _record_problems(
                     f"rollup dimension(s) {missing} not present in the record",
                 )
             )
+    if dimension_sets is not None:
+        problems.extend(_dimension_set_problems(dims, rollup_dimension_sets, dimension_sets))
+    return problems
+
+
+def _dimension_set_problems(
+    dims: dict[str, Any],
+    rollup_dimension_sets: Optional[list[list[str]]],
+    dimension_sets: list[list[str]],
+) -> list[_Problem]:
+    problems: list[_Problem] = []
+    if rollup_dimension_sets:
+        problems.append(
+            (
+                MetricRecordError,
+                "dimension_sets",
+                "dimension_sets and rollup_dimension_sets are mutually exclusive — "
+                "dimension_sets already lists every set the record is recorded under",
+            )
+        )
+    if not dimension_sets:
+        problems.append(
+            (
+                MetricRecordError,
+                "dimension_sets",
+                "dimension_sets is empty — a record needs at least one set "
+                "(an empty set [] records the metrics without dimensions)",
+            )
+        )
+    # Order-insensitive: [A, B] and [B, A] are the same CloudWatch metric, and
+    # a set listed twice counts every value twice in it.
+    seen: set[frozenset[str]] = set()
+    for dimension_set in dimension_sets:
+        missing = [k for k in dimension_set if k not in dims]
+        if missing:
+            problems.append(
+                (
+                    MetricRecordError,
+                    ",".join(missing),
+                    f"dimension set {dimension_set} names dimension(s) {missing} "
+                    "not present in the record",
+                )
+            )
+        key = frozenset(dimension_set)
+        if key in seen:
+            problems.append(
+                (
+                    MetricRecordError,
+                    ",".join(sorted(key)) or "[]",
+                    f"dimension set {sorted(key)} is listed twice — every value "
+                    "would be counted twice in that metric",
+                )
+            )
+        seen.add(key)
     return problems
 
 
@@ -291,6 +346,7 @@ class MetricsLogger:
         dimensions: Optional[dict[str, Any]] = None,
         units: Optional[dict[str, str]] = None,
         rollup_dimension_sets: Optional[list[list[str]]] = None,
+        dimension_sets: Optional[list[list[str]]] = None,
     ) -> None:
         """
         Emit one EMF record carrying one or more metric values.
@@ -305,6 +361,15 @@ class MetricsLogger:
         the coarser series without enumerating error types. One record, no
         double counting per set.
 
+        ``dimension_sets`` instead lists every set the record is recorded
+        under, and the full set is recorded only if it is listed. Use it to
+        record two independent breakdowns, e.g. ``[Service, Route]`` and
+        ``[Service, Tenant]``, without also paying for their cross product
+        ``[Service, Route, Tenant]``. Sets are recorded as given: default
+        dimensions are root members of the record either way, but a set
+        carries ``Service`` only if it names it. Mutually exclusive with
+        ``rollup_dimension_sets``.
+
         A record that fails validation is dropped with one warning per
         offending name (or raises, in strict mode); this never raises into the
         caller in production.
@@ -318,15 +383,17 @@ class MetricsLogger:
         # cardinality cap can't be sidestepped by splitting dimensions
         # across the constructor and the call.
         problems = _dimension_problems(dims) + _record_problems(
-            dims, metrics, rollup_dimension_sets
+            dims, metrics, rollup_dimension_sets, dimension_sets
         )
         if problems:
             self._reject(problems, metrics)
             return
 
-        dimension_sets: list[list[str]] = [list(dims.keys())] if dims else [[]]
-        for rollup in rollup_dimension_sets or []:
-            dimension_sets.append(list(rollup))
+        if dimension_sets is not None:
+            recorded_sets = [list(dimension_set) for dimension_set in dimension_sets]
+        else:
+            recorded_sets = [list(dims.keys())] if dims else [[]]
+            recorded_sets.extend(list(rollup) for rollup in rollup_dimension_sets or [])
 
         record: dict[str, Any] = {
             "_aws": {
@@ -334,7 +401,7 @@ class MetricsLogger:
                 "CloudWatchMetrics": [
                     {
                         "Namespace": self.namespace,
-                        "Dimensions": dimension_sets,
+                        "Dimensions": recorded_sets,
                         "Metrics": [
                             {"Name": name, "Unit": (units or {}).get(name, unit)}
                             for name in metrics
