@@ -9,7 +9,11 @@ import structlog
 from asgi_correlation_id import correlation_id
 
 from auditry.logging_config import _set_config_service, _set_strict, configure_logging
-from auditry.metrics import ForbiddenDimensionError, MetricsLogger
+from auditry.metrics import (
+    _EMF_MAX_KEYS_PER_DIMENSION_SET,
+    ForbiddenDimensionError,
+    MetricsLogger,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -543,6 +547,12 @@ class TestExplicitDimensionSets:
             (
                 {"dimension_sets": [["Route"]], "rollup_dimension_sets": [["Tenant"]]},
                 "mutually exclusive",
+            ),
+            # A record carries at most 8 distinct dimensions, so only a set repeating
+            # keys can pass the EMF per-set limit; the check holds if that cap is raised.
+            (
+                {"dimension_sets": [["Service"] * (_EMF_MAX_KEYS_PER_DIMENSION_SET + 1)]},
+                f"at most {_EMF_MAX_KEYS_PER_DIMENSION_SET} per set",
             ),
         ],
     )

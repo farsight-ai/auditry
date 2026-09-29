@@ -497,9 +497,10 @@ exact dimension match in a dashboard.
 
 Sets are recorded as given, and default dimensions join only the sets that name
 them. A set naming a dimension the record lacks, the same set listed twice (in
-any order), an empty list, or `dimension_sets` combined with
-`rollup_dimension_sets` drops the record with a warning (`ValueError` in strict
-mode). An empty set, `[]`, is valid and records the metrics without dimensions.
+any order), a set of more than 30 keys ([EMF's per-set limit](https://docs.aws.amazon.com/en_en/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html)),
+an empty list, or `dimension_sets` combined with `rollup_dimension_sets` drops
+the record with a warning (`ValueError` in strict mode). An empty set, `[]`, is
+valid and records the metrics without dimensions.
 
 ## User Tracking
 

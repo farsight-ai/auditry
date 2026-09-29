@@ -84,7 +84,13 @@ FORBIDDEN_DIMENSION_PATTERNS = (
     "fullname",
 )
 
-_MAX_DIMENSIONS = 8  # CloudWatch EMF hard limit is 30; keep cardinality sane.
+# EMF's hard limit on the dimension keys in one dimension set: "A DimensionSet
+# MUST NOT contain more than 30 dimension keys."
+# https://docs.aws.amazon.com/en_en/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
+_EMF_MAX_KEYS_PER_DIMENSION_SET = 30
+
+# Well under _EMF_MAX_KEYS_PER_DIMENSION_SET, to keep cardinality sane.
+_MAX_DIMENSIONS = 8
 
 # Dimension VALUES must be short, single-line identifiers. Pattern-matching
 # values the way we match keys would misfire constantly ("email-service" is a
@@ -261,6 +267,15 @@ def _dimension_set_problems(
     # a set listed twice counts every value twice in it.
     seen: set[frozenset[str]] = set()
     for dimension_set in dimension_sets:
+        if len(dimension_set) > _EMF_MAX_KEYS_PER_DIMENSION_SET:
+            problems.append(
+                (
+                    DimensionLimitError,
+                    "dimension_sets",
+                    f"dimension set has {len(dimension_set)} keys — EMF allows at most "
+                    f"{_EMF_MAX_KEYS_PER_DIMENSION_SET} per set",
+                )
+            )
         missing = [k for k in dimension_set if k not in dims]
         if missing:
             problems.append(
