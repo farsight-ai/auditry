@@ -1,8 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-09-30)
 
-Additive: records emitted without the new argument are byte-identical to 0.4.0.
+The 0.4.0 wheel on PyPI was built before the full 0.4.0 changes merged, so two
+0.4.0 items reach PyPI for the first time in this release (see *Included from
+0.4.0*). Upgrading from the published 0.4.0: health-probe requests stop being
+logged, and a `DeprecationWarning` can fail test suites that treat warnings as
+errors. Upgrading from 0.3.x: follow the 0.4.0 steps below. Nothing extra is
+needed.
+
+### Included from 0.4.0
+
+Both items are described under 0.4.0 but are missing from the 0.4.0 wheel on PyPI.
+
+- Health/liveness probe paths (`/health`, `/healthz`, `/livez`, `/live`,
+  `/ready`, `/readyz`, `/api/health`) are excluded from request/response
+  logging by default. Log-derived request counts drop; check low-log-volume
+  alarms before rollout. Opt out with `include_default_excluded_paths=False`.
+- A `DeprecationWarning` fires on `ObservabilityConfig` construction when
+  `log_request_body` / `log_response_body` are left implicit. Test suites
+  running `-W error` fail until both flags are set explicitly.
 
 ### Added
 
@@ -19,7 +36,11 @@ Additive: records emitted without the new argument are byte-identical to 0.4.0.
 - README: the `rollup_dimension_sets` example now names `Service` in its rollup,
   so the set it records matches its comment. Rollup sets are recorded as given.
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-09-23)
+
+The wheel published to PyPI as 0.4.0 does not include the default health-probe
+path exclusion or the body-logging `DeprecationWarning` listed below. Both
+ship in 0.5.0.
 
 Hardening release: safer defaults for sensitive content, first-class
 correlation propagation outside ASGI, and an EMF metrics helper.
