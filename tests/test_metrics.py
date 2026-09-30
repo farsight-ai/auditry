@@ -9,7 +9,11 @@ import structlog
 from asgi_correlation_id import correlation_id
 
 from auditry.logging_config import _set_config_service, _set_strict, configure_logging
-from auditry.metrics import ForbiddenDimensionError, MetricsLogger
+from auditry.metrics import (
+    _EMF_MAX_KEYS_PER_DIMENSION_SET,
+    ForbiddenDimensionError,
+    MetricsLogger,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -481,3 +485,80 @@ class TestReservedPipelineKeys:
         logger, _ = make_logger(strict=True)
         with pytest.raises(MetricRecordError, match="reserved"):
             logger.count("X", dimensions={"correlation_id": "abc"})
+
+
+class TestExplicitDimensionSets:
+    """dimension_sets= records under exactly the listed sets, in one line."""
+
+    BREAKDOWNS = [["Service", "Route"], ["Service", "Tenant"]]
+
+    def _emit(self, logger, **kwargs):
+        logger.emit(
+            {"Latency": 12.5, "Success": 1, "Error": 0},
+            units={"Latency": "Milliseconds"},
+            dimensions={"Route": "checkout", "Tenant": "t-1"},
+            **kwargs,
+        )
+
+    def test_records_under_exactly_the_listed_sets(self):
+        logger, sink = make_logger()
+        self._emit(logger, dimension_sets=self.BREAKDOWNS)
+        (rec,) = records(sink)
+        assert rec["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == self.BREAKDOWNS
+
+    def test_one_call_is_one_line_through_the_log_pipeline(self, capsys):
+        configure_logging(service="test-svc", environment="test")
+        logger = MetricsLogger(namespace="Test/NS", service="test-svc")
+        self._emit(logger, dimension_sets=self.BREAKDOWNS)
+        lines = [r for r in stream_records(capsys) if "_aws" in r]
+        assert [r["_aws"]["CloudWatchMetrics"][0]["Dimensions"] for r in lines] == [self.BREAKDOWNS]
+
+    def test_default_dimensions_stay_on_the_record_but_join_no_unlisted_set(self):
+        logger, sink = make_logger()
+        self._emit(logger, dimension_sets=[["Tenant"]])
+        (rec,) = records(sink)
+        assert (rec["_aws"]["CloudWatchMetrics"][0]["Dimensions"], rec["Service"]) == (
+            [["Tenant"]],
+            "test-svc",
+        )
+
+    def test_an_empty_set_records_without_dimensions(self):
+        logger, sink = make_logger()
+        self._emit(logger, dimension_sets=[[]])
+        (rec,) = records(sink)
+        assert rec["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[]]
+
+    @pytest.mark.parametrize(
+        ("kwargs", "reason"),
+        [
+            ({"dimension_sets": [["Service", "Nope"]]}, "not present"),
+            ({"dimension_sets": [["Service", "Route"], ["Route", "Service"]]}, "twice"),
+            ({"dimension_sets": []}, "empty"),
+            (
+                {"dimension_sets": [["Route"]], "rollup_dimension_sets": [["Tenant"]]},
+                "mutually exclusive",
+            ),
+            # A record carries at most 8 distinct dimensions, so only a set repeating
+            # keys can pass the EMF per-set limit; the check holds if that cap is raised.
+            (
+                {"dimension_sets": [["Service"] * (_EMF_MAX_KEYS_PER_DIMENSION_SET + 1)]},
+                f"at most {_EMF_MAX_KEYS_PER_DIMENSION_SET} per set",
+            ),
+        ],
+    )
+    def test_a_malformed_set_list_is_dropped_and_raises_in_strict_mode(self, kwargs, reason):
+        logger, sink = make_logger()
+        self._emit(logger, **kwargs)
+        assert sink.getvalue() == ""
+        strict_logger, _ = make_logger(strict=True)
+        with pytest.raises(ValueError, match=reason):
+            self._emit(strict_logger, **kwargs)
+
+    def test_without_dimension_sets_the_full_set_is_still_recorded_first(self):
+        logger, sink = make_logger()
+        self._emit(logger, rollup_dimension_sets=[["Service", "Route"]])
+        (rec,) = records(sink)
+        assert rec["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [
+            ["Service", "Route", "Tenant"],
+            ["Service", "Route"],
+        ]

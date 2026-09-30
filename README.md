@@ -463,12 +463,44 @@ matter how the calls are scoped.
 metrics.emit(
     {"Error": 1},
     dimensions={"Dependency": "s3", "ErrorType": "ClientError"},
-    rollup_dimension_sets=[["Dependency"]],   # also record under [Service, Dependency]
+    rollup_dimension_sets=[["Service", "Dependency"]],   # also record under [Service, Dependency]
 )
 ```
 
-Rollup names must already be present on the record; otherwise the record is
-dropped with a warning (`ValueError` in strict mode).
+Rollup sets are recorded exactly as given: default dimensions like `Service`
+join a rollup only when it names them. Rollup names must already be present on
+the record; otherwise the record is dropped with a warning (`ValueError` in
+strict mode).
+
+### Explicit Dimension Sets
+
+Every record is recorded under its full dimension set, plus any rollups. For
+two independent breakdowns of the same event that is one set too many: a record
+carrying both `Route` and `Tenant` also creates `[Service, Route, Tenant]`, one
+billable metric per route and tenant pair, which nobody asked for.
+`dimension_sets=` lists every set instead, and only those are recorded:
+
+```python
+metrics.emit(
+    {"Latency": 12.5, "Success": 1, "Error": 0},
+    units={"Latency": "Milliseconds"},
+    dimensions={"Route": "checkout", "Tenant": "t-1"},
+    dimension_sets=[["Service", "Route"], ["Service", "Tenant"]],
+)
+```
+
+That is still one log line, with each value on it once. CloudWatch creates one
+metric per listed set and counts the value once in each, so summing within a
+set is exact. A query that spans sets counts the record once per set: pin the
+set with `SCHEMA("MyOrg/MyService", Service, Route)` in Metrics Insights, or an
+exact dimension match in a dashboard.
+
+Sets are recorded as given, and default dimensions join only the sets that name
+them. A set naming a dimension the record lacks, the same set listed twice (in
+any order), a set of more than 30 keys ([EMF's per-set limit](https://docs.aws.amazon.com/en_en/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html)),
+an empty list, or `dimension_sets` combined with `rollup_dimension_sets` drops
+the record with a warning (`ValueError` in strict mode). An empty set, `[]`, is
+valid and records the metrics without dimensions.
 
 ## User Tracking
 

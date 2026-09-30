@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Additive: records emitted without the new argument are byte-identical to 0.4.0.
+
+### Added
+
+- `MetricsLogger.emit(dimension_sets=...)` records a metric under exactly the
+  listed dimension sets, so two independent breakdowns of one event (say
+  `[Service, Route]` and `[Service, Tenant]`) no longer create their cross
+  product. Still one log line per call. A set naming a missing dimension, a
+  duplicate set, a set of more than 30 keys (the EMF per-set limit), an empty
+  list, or combining it with `rollup_dimension_sets` is dropped with a warning,
+  or raises in strict mode.
+
+### Fixed
+
+- README: the `rollup_dimension_sets` example now names `Service` in its rollup,
+  so the set it records matches its comment. Rollup sets are recorded as given.
+
 ## 0.4.0 (unreleased)
 
 Hardening release: safer defaults for sensitive content, first-class
