@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 (2026-10-16)
+## 0.6.0
 
 Optional OpenTelemetry tracing. Nothing changes for services that don't opt
 in: trace context is only propagated with the `otel` extra installed, not
@@ -19,8 +19,10 @@ and `tracing=True` fails at startup.
   which keeps spans OPERATIONAL-only: it removes exception messages and
   stack traces, status descriptions, full URLs and query strings, header
   attributes, client address, user agent, and attributes matching the
-  redaction or forbidden-dimension patterns or `content`, and replaces raw
-  paths with the route template.
+  redaction or forbidden-dimension patterns or `content`, drops SQL
+  statements, and replaces raw paths with the route template.
+  `configure_tracing` raises if a global tracer provider is already
+  installed, rather than leaving spans on an unredacted one.
 - `trace_id` and `span_id` on every log line inside a span.
 - `outbound_headers()` carries `traceparent` / `tracestate` when a span is
   active, and `with_correlation` continues the inbound trace. The SQS

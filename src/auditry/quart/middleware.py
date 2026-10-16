@@ -16,13 +16,6 @@ from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
 
-# The otel extra is optional; ObservabilityConfig rejects tracing=True when it
-# is not installed, so TracingMiddleware is only None when tracing is off.
-try:
-    from ..otel.middleware import TracingMiddleware
-except ImportError:
-    TracingMiddleware = None  # type: ignore[misc,assignment]
-
 
 class QuartMiddleware(BaseMiddleware):
     """Quart middleware with logging and correlation."""
@@ -50,6 +43,9 @@ class QuartMiddleware(BaseMiddleware):
 
     def _setup_tracing_middleware(self, tracer_provider: Any) -> None:
         """Wrap the ASGI app outermost, so the span is active for every hook."""
+        # Imported only when enabled: the otel extra is optional.
+        from ..otel.middleware import TracingMiddleware
+
         self.app.asgi_app = TracingMiddleware(  # type: ignore[assignment]
             self.app.asgi_app,
             excluded_paths=self.config.excluded_paths,

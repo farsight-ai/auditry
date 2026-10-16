@@ -73,8 +73,18 @@ def configure_tracing(
     """
     Build a tracer provider (see :func:`build_tracer_provider`) and install it
     as the global one. Call once at startup, next to ``configure_logging``.
-    OpenTelemetry allows the global provider to be set only once per process.
+
+    OpenTelemetry allows the global provider to be set only once per process
+    and ignores later attempts, so this raises if one is already installed
+    (for example by ``opentelemetry-instrument``): spans would otherwise go to
+    that provider, unredacted. Use :func:`build_tracer_provider` and pass it to
+    ``create_middleware(..., tracer_provider=...)`` instead.
     """
+    if not isinstance(otel_trace.get_tracer_provider(), otel_trace.ProxyTracerProvider):
+        raise RuntimeError(
+            "a global tracer provider is already installed; use build_tracer_provider() "
+            "and pass it to create_middleware(tracer_provider=...)"
+        )
     provider = build_tracer_provider(
         service,
         version,

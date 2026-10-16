@@ -1,7 +1,7 @@
 """FastAPI middleware for observability."""
 
 import time
-from typing import Any
+from typing import Any, Optional
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
@@ -15,12 +15,13 @@ from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
 
-# The otel extra is optional; ObservabilityConfig rejects tracing=True when it
-# is not installed, so TracingMiddleware is only None when tracing is off.
-try:
-    from ..otel.middleware import TracingMiddleware
-except ImportError:
-    TracingMiddleware = None  # type: ignore[misc,assignment]
+
+def _route_template(scope: dict[str, Any]) -> Optional[str]:
+    """The matched route template, which FastAPI records in the shared scope
+    while routing. Built like OpenTelemetry's ASGI ``http.route`` (mount
+    prefix plus converter-free template), so span names and metrics agree."""
+    path_format = getattr(scope.get("route"), "path_format", None)
+    return f"{scope.get('root_path', '')}{path_format}" if path_format else None
 
 
 class FastAPIMiddleware:
@@ -102,11 +103,9 @@ class FastAPIMiddleware:
         is_streaming = False
 
         def annotate_span() -> None:
-            # FastAPI records the matched route in the shared scope while
-            # routing. The server span ends with the last response chunk, so
-            # it is annotated when the response starts (or fails), not after.
-            route = scope.get("route")
-            annotate_server_span(method, getattr(route, "path", None), correlation_id)
+            # The server span ends with the last response chunk, so it is
+            # annotated when the response starts (or fails), not after.
+            annotate_server_span(method, _route_template(scope), correlation_id)
 
         async def capture_response(message):
             nonlocal is_streaming
@@ -188,6 +187,9 @@ def create_middleware(app, config: ObservabilityConfig, tracer_provider: Any = N
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)
     if config.tracing:
+        # Imported only when enabled: the otel extra is optional.
+        from ..otel.middleware import TracingMiddleware
+
         app.add_middleware(
             TracingMiddleware,
             excluded_paths=config.excluded_paths,

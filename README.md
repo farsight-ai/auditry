@@ -385,12 +385,15 @@ everything the one below does, plus:
 |---|---|
 | `none` | nothing (logs a warning at startup) |
 | `low` | header attributes, query strings, URL fragments and userinfo, and attributes matching the log redaction patterns (`token`, `password`, ...) |
-| `medium` | client IP and user agent, full URLs, raw paths (replaced by the route template), and attributes matching the forbidden metric-dimension patterns (`email`, `query`, `prompt`, ...) or `content` |
+| `medium` | client IP and user agent, full URLs, raw paths (replaced by the route template), SQL statements, and attributes matching the forbidden metric-dimension patterns (`email`, `query`, `prompt`, ...) or `content` |
 | `high` (default) | exception messages, stack traces, and status descriptions; only the exception type is kept |
 
 Matching is by attribute **name**, so only put system-generated values on
 spans (`span.set_attribute("app.note", question)` would pass), and name spans
-after operations, never data. Add patterns with
+after operations, never data. Semantic-convention keys that hold only counts,
+sizes, or opaque IDs are kept even when their name matches a pattern
+(`gen_ai.usage.input_tokens`, `http.response_content_length`,
+`messaging.message.id`, ...). Add patterns with
 `additional_redaction_patterns=[...]`. A failing exporter drops the batch and
 warns once per error type; in strict mode it raises.
 

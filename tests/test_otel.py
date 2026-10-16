@@ -204,6 +204,21 @@ class TestFastAPISpans:
         assert _hex_trace_id(span) == TRACE_ID
         assert otel_trace.format_span_id(span.parent.span_id) == PARENT_SPAN_ID
 
+    def test_mounted_route_name_matches_otel_http_route(self, tracing):
+        app = FastAPI()
+        create_fastapi_middleware(app, _config(), tracer_provider=tracing.provider)
+        api = FastAPI()
+
+        @api.get("/items/{item_id:int}")
+        async def get_item(item_id: int):
+            return {"item_id": item_id}
+
+        app.mount("/v1", api)
+        TestClient(app).get("/v1/items/42")
+        (span,) = tracing.server_spans()
+        assert span.name == "GET /v1/items/{item_id}"
+        assert span.attributes["http.route"] == "/v1/items/{item_id}"
+
     def test_tracing_off_creates_no_spans(self, tracing):
         app = FastAPI()
         create_fastapi_middleware(
@@ -324,6 +339,18 @@ class TestSpansDoNotLeak:
         assert span.attributes["http.target"] == "/files/{name}"
         assert SECRET not in span.to_json()
 
+    def test_operational_keys_survive_pattern_collisions(self, tracing):
+        operational = {
+            "gen_ai.usage.input_tokens": 12,
+            "http.response_content_length": 512,
+            "messaging.message.id": "m-1",
+            "code.filepath": "app/main.py",
+        }
+        with tracing.tracer.start_as_current_span("work") as span:
+            span.set_attributes({**operational, "db.statement": f"SELECT '{SECRET}'"})
+        (exported,) = tracing.spans()
+        assert dict(exported.attributes) == operational
+
     def test_additional_patterns_are_applied(self):
         memory = InMemorySpanExporter()
         provider = build_tracer_provider(
@@ -368,6 +395,11 @@ def _export_at(level, attributes=_LEVEL_ATTRIBUTES, error=None):
 class TestRedactionLevels:
     def test_default_is_high(self):
         assert RedactingSpanExporter(InMemorySpanExporter()).level is RedactionLevel.HIGH
+
+    def test_sql_statement_is_kept_at_low_and_dropped_from_medium(self):
+        statement = {"db.statement": "SELECT 1"}
+        assert dict(_export_at("low", statement).attributes) == statement
+        assert dict(_export_at("medium", statement).attributes) == {}
 
     def test_env_var_sets_the_level(self, monkeypatch):
         monkeypatch.setenv(REDACTION_LEVEL_ENV, "Medium")
@@ -496,6 +528,12 @@ class TestProviderSetup:
         provider = configure_tracing(service="svc", exporter=InMemorySpanExporter())
         assert installed == [provider]
 
+    def test_configure_tracing_refuses_to_replace_an_installed_provider(self, monkeypatch):
+        installed = TracerProvider()
+        monkeypatch.setattr(auditry_tracing.otel_trace, "get_tracer_provider", lambda: installed)
+        with pytest.raises(RuntimeError, match="already installed"):
+            configure_tracing(exporter=InMemorySpanExporter())
+
 
 # ---------------------------------------------------------------------------
 # Propagation
@@ -534,6 +572,14 @@ class TestPropagation:
 
         assert task(correlation_id="c1", traceparent=TRACEPARENT)[0] == TRACE_ID
         assert current_trace_ids() is None
+
+    def test_malformed_traceparent_keeps_the_current_trace(self, tracing):
+        @with_correlation
+        def task():
+            return current_trace_ids()
+
+        with tracing.tracer.start_as_current_span("outer") as span:
+            assert task(traceparent="garbage")[0] == _hex_trace_id(span)
 
     def test_with_correlation_keeps_trace_kwargs_the_task_accepts(self):
         @with_correlation

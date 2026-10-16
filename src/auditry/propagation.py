@@ -152,6 +152,9 @@ def outbound_headers(
 
     Also attach these to third-party API calls where the SDK allows custom
     headers/metadata, so vendor-side audit trails line up with your logs.
+
+    Inside a span, the active ``traceparent``/``tracestate`` replace any
+    passed in ``extra``.
     """
     headers = dict(extra) if extra else {}
     headers.update(trace_context())

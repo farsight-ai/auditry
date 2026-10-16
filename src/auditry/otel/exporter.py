@@ -33,8 +33,8 @@ class RedactionLevel(str, Enum):
       redaction patterns (``token``, ``password``, ...).
     - ``MEDIUM``: customer data in attributes. Client address and user
       agent, full URLs, raw paths (replaced by the route template), and
-      attributes matching the forbidden metric-dimension patterns
-      (``email``, ``query``, ...) or ``content``.
+      SQL statements, and attributes matching the forbidden
+      metric-dimension patterns (``email``, ``query``, ...) or ``content``.
     - ``HIGH`` (default): free text. Exception messages, stack traces, and
       status descriptions; only the exception type is kept.
     """
@@ -94,9 +94,30 @@ _RAW_URL_ATTRIBUTES = frozenset({"http.url", "url.full"})
 # GenAI instrumentation records prompt and response text under "content".
 _TRACE_ONLY_PATTERNS = ("content",)
 
-# Semantic-convention keys that contain a forbidden substring but hold only
-# a host name ("address" is forbidden for street addresses).
-_SAFE_ATTRIBUTES = frozenset({"server.address"})
+# Statement text interpolates customer values. db.query.text is caught by the
+# "query" pattern; db.statement (the pre-stable name) matches no pattern.
+_STATEMENT_ATTRIBUTES = frozenset({"db.statement"})
+
+# Semantic-convention keys that contain a sensitive substring but hold only
+# operational data: a host name ("address"), counts and sizes ("token",
+# "content", "message"), opaque IDs, and source locations ("filepath").
+_SAFE_ATTRIBUTES = frozenset(
+    {
+        "server.address",
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "gen_ai.usage.prompt_tokens",
+        "gen_ai.usage.completion_tokens",
+        "http.request_content_length",
+        "http.response_content_length",
+        "messaging.message.id",
+        "messaging.message.body.size",
+        "messaging.message.envelope.size",
+        "messaging.batch.message_count",
+        "code.filepath",
+        "code.file.path",
+    }
+)
 
 # An exception event keeps only its class; the message and stack trace can
 # interpolate user content.
@@ -206,7 +227,7 @@ class RedactingSpanExporter(SpanExporter):
         for key, value in attributes.items():
             if key.startswith(_HEADER_PREFIXES) or key in _QUERY_ATTRIBUTES:
                 continue
-            if medium and key in _CLIENT_ATTRIBUTES:
+            if medium and (key in _CLIENT_ATTRIBUTES or key in _STATEMENT_ATTRIBUTES):
                 continue
             if key in _RAW_URL_ATTRIBUTES or key in _RAW_PATH_ATTRIBUTES:
                 value = self._redact_location(key, value, route)

@@ -86,12 +86,17 @@ def attach_trace_context(carrier: Mapping[str, str]) -> Optional[object]:
     and outbound calls continue it instead of starting a new trace.
 
     Returns a token for :func:`detach_trace_context`, or ``None`` when the
-    carrier has no ``traceparent`` (the current context is left as is, so an
-    in-flight trace is never replaced by nothing).
+    carrier has no valid ``traceparent`` (the current context is left as is,
+    so an in-flight trace is never replaced by nothing).
     """
     if _propagator is None or not carrier.get("traceparent"):
         return None
-    return otel_context.attach(_propagator.extract(carrier))
+    # extract() starts from an empty Context, so a malformed traceparent
+    # yields a context with no span at all.
+    extracted = _propagator.extract(carrier)
+    if not otel_trace.get_current_span(extracted).get_span_context().is_valid:
+        return None
+    return otel_context.attach(extracted)
 
 
 def detach_trace_context(token: Optional[object]) -> None:
