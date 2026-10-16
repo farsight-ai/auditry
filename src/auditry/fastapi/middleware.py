@@ -1,6 +1,7 @@
 """FastAPI middleware for observability."""
 
 import time
+from typing import Any
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
@@ -9,9 +10,17 @@ from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
+from ..otel_context import annotate_server_span
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
+
+# The otel extra is optional; ObservabilityConfig rejects tracing=True when it
+# is not installed, so TracingMiddleware is only None when tracing is off.
+try:
+    from ..otel.middleware import TracingMiddleware
+except ImportError:
+    TracingMiddleware = None  # type: ignore[misc,assignment]
 
 
 class FastAPIMiddleware:
@@ -92,10 +101,18 @@ class FastAPIMiddleware:
         response_body_chunks: list[bytes] = []
         is_streaming = False
 
+        def annotate_span() -> None:
+            # FastAPI records the matched route in the shared scope while
+            # routing. The server span ends with the last response chunk, so
+            # it is annotated when the response starts (or fails), not after.
+            route = scope.get("route")
+            annotate_server_span(method, getattr(route, "path", None), correlation_id)
+
         async def capture_response(message):
             nonlocal is_streaming
 
             if message["type"] == "http.response.start":
+                annotate_span()
                 response_info["status"] = message["status"]
 
                 # Capture headers
@@ -140,6 +157,7 @@ class FastAPIMiddleware:
             )
 
         except Exception as error:
+            annotate_span()
             # Log error
             duration_ms = (time.time() - start_time) * 1000
             user_id = await self.request_adapter.extract_user_id(request)
@@ -158,11 +176,21 @@ class FastAPIMiddleware:
             self.request_adapter.clear_cache(request)
 
 
-def create_middleware(app, config: ObservabilityConfig):
-    """Create and attach observability middleware to FastAPI app."""
+def create_middleware(app, config: ObservabilityConfig, tracer_provider: Any = None):
+    """Create and attach observability middleware to FastAPI app.
+
+    ``tracer_provider`` applies only with ``config.tracing``; the global
+    provider is used when it is omitted.
+    """
     _set_config_service(config.service_name)
     _set_correlation_header(config.correlation_id_header)
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)
+    if config.tracing:
+        app.add_middleware(
+            TracingMiddleware,
+            excluded_paths=config.excluded_paths,
+            tracer_provider=tracer_provider,
+        )
     return app

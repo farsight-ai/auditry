@@ -32,6 +32,7 @@ from .errors import AuditryError
 from .logging_config import configure_logging, get_logger, is_strict, set_trace_handler
 from .metrics import ForbiddenDimensionError, MetricsLogger
 from .models import BusinessEventConfig, ObservabilityConfig
+from .otel_context import trace_context
 from .propagation import (
     bind_correlation_id,
     bind_from_sqs_message,
@@ -43,7 +44,7 @@ from .propagation import (
     with_correlation,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # Configuration
@@ -64,6 +65,7 @@ __all__ = [
     "bind_from_sqs_message",
     "extract_correlation_id",
     "with_correlation",
+    "trace_context",
     # Metrics
     "MetricsLogger",
     "ForbiddenDimensionError",

@@ -21,6 +21,8 @@ This module provides JSON-formatted logging with production-safe defaults:
   in the process.
 - The correlation ID is attached to every log line automatically (from the
   ASGI middleware context or a worker binding — see ``auditry.propagation``).
+  With the ``otel`` extra and an active span, ``trace_id`` and ``span_id``
+  are attached too (see ``auditry.otel_context``).
 - Instrumentation never fails the unit of work it measures. In production a
   bad metric dimension or a broken trace handler degrades to "drop and
   warn". In a *known* non-production environment the same failures raise
@@ -31,12 +33,15 @@ This module provides JSON-formatted logging with production-safe defaults:
 import logging
 import os
 import sys
+import traceback
 from collections.abc import MutableMapping
 from types import TracebackType
 from typing import Any, Callable, Optional
 
 import structlog
 from asgi_correlation_id import correlation_id
+
+from .otel_context import current_trace_ids
 
 # ---------------------------------------------------------------------------
 # Service context — service/version/environment stamped on every log line, so
@@ -188,6 +193,33 @@ def _add_correlation_id(
     return event_dict
 
 
+def _add_trace_context(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Every log line inside a span carries its ``trace_id`` and ``span_id``,
+    so a line links to its trace. Absent outside a span, for the same reason
+    ``correlation_id`` is absent when unbound."""
+    if "trace_id" not in event_dict:
+        ids = current_trace_ids()
+        if ids:
+            event_dict["trace_id"], event_dict["span_id"] = ids
+    return event_dict
+
+
+def resolve_service_context(
+    service: Optional[str] = None,
+    version: Optional[str] = None,
+    environment: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    """service/version/environment from the arguments, falling back to the
+    SERVICE_NAME / SERVICE_VERSION / ENVIRONMENT env vars."""
+    return {
+        "service": service or os.environ.get("SERVICE_NAME"),
+        "version": version or os.environ.get("SERVICE_VERSION"),
+        "environment": environment or os.environ.get("ENVIRONMENT"),
+    }
+
+
 def _error_type_only(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
@@ -225,13 +257,11 @@ def _error_type_only(
             # application logging.
             event_dict["trace_handler_error"] = True
     if _full_tracebacks:
-        import traceback as _tb
-
         # Dev-only escape hatch. The traceback is passed through unmodified —
         # the JSON renderer escapes its newlines, so the stream line stays
         # single-line while the decoded value stays a real, tool-parseable
         # traceback.
-        event_dict["exception"] = "".join(_tb.format_exception(*exc_info))
+        event_dict["exception"] = "".join(traceback.format_exception(*exc_info))
     return event_dict
 
 
@@ -283,11 +313,7 @@ def configure_logging(
     global _full_tracebacks, _strict
 
     _service_context.clear()
-    resolved = {
-        "service": service or os.environ.get("SERVICE_NAME"),
-        "version": version or os.environ.get("SERVICE_VERSION"),
-        "environment": environment or os.environ.get("ENVIRONMENT"),
-    }
+    resolved = resolve_service_context(service, version, environment)
     _service_context.update({k: v for k, v in resolved.items() if v})
     _full_tracebacks = os.environ.get(_FULL_TRACEBACKS_ENV, "").lower() in ("1", "true", "yes")
     _strict = _resolve_strict(strict, resolved["environment"])
@@ -307,6 +333,8 @@ def configure_logging(
         _add_service_context,
         # correlation ID on every line (when a context is bound)
         _add_correlation_id,
+        # trace_id / span_id on every line inside a span (otel extra)
+        _add_trace_context,
         # "message" is the schema key — renamed BEFORE the exception
         # processors so the trace handler's event_dict snapshot matches the
         # documented schema

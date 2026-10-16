@@ -12,6 +12,7 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Request / Correlation IDs](#request--correlation-ids)
+- [Tracing (OpenTelemetry)](#tracing-opentelemetry)
 - [User Tracking](#user-tracking)
 - [Business Event Tagging (For Analytics)](#business-event-tagging-for-analytics)
 - [Log Output](#log-output)
@@ -41,6 +42,14 @@ pip install auditry[fastapi]
 ```bash
 pip install auditry[quart]
 ```
+
+### For tracing (OpenTelemetry)
+
+```bash
+pip install auditry[otel]
+```
+
+See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 
 ### For everything
 
@@ -171,6 +180,10 @@ config = ObservabilityConfig(
 
     # Whether to log response bodies (same caveat as request bodies)
     log_response_body=False,
+
+    # Start an OpenTelemetry span per request (default: False).
+    # Requires auditry[otel]; see Tracing (OpenTelemetry).
+    tracing=False,
 )
 
 # For FastAPI:
@@ -318,6 +331,91 @@ from user data. Inbound IDs are propagated verbatim (that is the point of
 propagation), so the randomness guarantee holds end-to-end only when the
 edge service generated the ID. Don't accept correlation IDs from untrusted
 callers into systems that assume opacity.
+
+## Tracing (OpenTelemetry)
+
+Optional, Python 3.10+. A server span per request, `trace_id`/`span_id` on
+every log line, and W3C trace context across HTTP and worker hops. Services
+that don't install `auditry[otel]` and set `tracing=True` see no change.
+
+```python
+from auditry.otel import configure_tracing
+
+configure_logging(service="my-service", environment="prod")
+configure_tracing(service="my-service", environment="prod")
+app = create_middleware(app, ObservabilityConfig(service_name="my-service", tracing=True))
+```
+
+Spans export over OTLP/HTTP, configured by the standard env vars:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # e.g. an ADOT collector sidecar
+OTEL_TRACES_SAMPLER=parentbased_traceidratio        # optional sampling
+OTEL_TRACES_SAMPLER_ARG=0.1
+```
+
+[`examples/otel_example.py`](examples/otel_example.py) sends one trace across
+two services and a worker, to a local Grafana (`grafana/otel-lgtm`) or stderr.
+
+### What You Get
+
+- **Server spans** named by route template (`GET /items/{item_id}`), tagged
+  with `correlation_id`. `excluded_paths` are not traced.
+- **`trace_id`/`span_id` on log lines** inside a span, next to `correlation_id`.
+- **Propagation:** an inbound `traceparent` is continued; `outbound_headers()`
+  adds it to outbound calls; `@with_correlation` continues it from
+  `traceparent`/`tracestate` job kwargs (producer:
+  `enqueue(..., correlation_id=ensure_correlation_id(), **trace_context())`)
+  and runs the job in a `process <function name>` CONSUMER span.
+
+Baggage is never propagated, and the SQS helpers carry only the correlation
+ID. For a queue, put `trace_context()` into the message attributes on send,
+and on receive wrap the work in `attach_trace_context(...)` /
+`detach_trace_context(...)` from `auditry.otel_context` plus a span of your
+own. SQS allows 10 attributes per message; the trace context uses up to 2.
+
+### Redaction
+
+Every span passes through `RedactingSpanExporter` before export. Set the level
+with `configure_tracing(redaction_level=...)` or `AUDITRY_TRACE_REDACTION`
+(the argument wins; an unknown value fails at startup). Each level removes
+everything the one below does, plus:
+
+| Level | Also removes |
+|---|---|
+| `none` | nothing (logs a warning at startup) |
+| `low` | header attributes, query strings, URL fragments and userinfo, and attributes matching the log redaction patterns (`token`, `password`, ...) |
+| `medium` | client IP and user agent, full URLs, raw paths (replaced by the route template), and attributes matching the forbidden metric-dimension patterns (`email`, `query`, `prompt`, ...) or `content` |
+| `high` (default) | exception messages, stack traces, and status descriptions; only the exception type is kept |
+
+Matching is by attribute **name**, so only put system-generated values on
+spans (`span.set_attribute("app.note", question)` would pass), and name spans
+after operations, never data. Add patterns with
+`additional_redaction_patterns=[...]`. A failing exporter drops the batch and
+warns once per error type; in strict mode it raises.
+
+### Outbound Call Spans
+
+auditry does not trace outbound calls. Add the OpenTelemetry instrumentation
+for your clients (match the `0.Nb` version of the
+`opentelemetry-instrumentation-asgi` auditry installed); their spans join the
+request's trace and are redacted like any other:
+
+```python
+from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+provider = configure_tracing(service="my-service")
+HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+BotocoreInstrumentor().instrument(tracer_provider=provider)
+```
+
+### Custom Exporter or Provider
+
+`configure_tracing(exporter=...)` takes any `SpanExporter` and still wraps it
+in `RedactingSpanExporter`. `build_tracer_provider(...)` returns a provider
+without installing it globally; pass it as `create_middleware(...,
+tracer_provider=...)` (e.g. with `InMemorySpanExporter` in tests).
 
 ## Metrics (CloudWatch EMF)
 

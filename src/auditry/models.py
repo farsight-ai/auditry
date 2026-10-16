@@ -3,6 +3,8 @@ from typing import Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
+from .otel_context import otel_extra_installed
+
 # Health/liveness probes are excluded from request/response logging by
 # default (they still get the correlation-ID header). A load balancer pings
 # every task every 15-30s; unsuppressed, that noise inflates log cost and
@@ -130,6 +132,25 @@ class ObservabilityConfig(BaseModel):
             "paths are merged in by default (see include_default_excluded_paths)."
         ),
     )
+
+    tracing: bool = Field(
+        default=False,
+        description=(
+            "Start an OpenTelemetry server span per request and name it by "
+            "route template. Requires the otel extra (pip install "
+            "auditry[otel]) and a tracer provider, normally from "
+            "auditry.otel.configure_tracing. excluded_paths are not traced."
+        ),
+    )
+
+    @field_validator("tracing")
+    @classmethod
+    def validate_tracing_installed(cls, v: bool) -> bool:
+        if v and not otel_extra_installed():
+            raise ValueError(
+                "tracing=True requires the otel extra on Python 3.10+: pip install auditry[otel]"
+            )
+        return v
 
     def model_post_init(self, __context) -> None:
         # Deprecation notice: body logging will default to OFF in a future

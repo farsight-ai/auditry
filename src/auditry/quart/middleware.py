@@ -1,6 +1,7 @@
 """Quart observability middleware."""
 
 import time
+from typing import Any
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from quart import Quart, Request, Response, request
@@ -10,15 +11,23 @@ from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
+from ..otel_context import annotate_server_span
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
+
+# The otel extra is optional; ObservabilityConfig rejects tracing=True when it
+# is not installed, so TracingMiddleware is only None when tracing is off.
+try:
+    from ..otel.middleware import TracingMiddleware
+except ImportError:
+    TracingMiddleware = None  # type: ignore[misc,assignment]
 
 
 class QuartMiddleware(BaseMiddleware):
     """Quart middleware with logging and correlation."""
 
-    def __init__(self, app: Quart, config: ObservabilityConfig):
+    def __init__(self, app: Quart, config: ObservabilityConfig, tracer_provider: Any = None):
         self.app = app
         self.config = config
         self.logger = RequestResponseLogger(config)
@@ -26,6 +35,8 @@ class QuartMiddleware(BaseMiddleware):
         self.response_adapter = QuartResponseAdapter()
 
         self._setup_correlation_middleware()
+        if config.tracing:
+            self._setup_tracing_middleware(tracer_provider)
         self._register_hooks()
 
     def _setup_correlation_middleware(self):
@@ -36,6 +47,21 @@ class QuartMiddleware(BaseMiddleware):
             header_name=self.config.correlation_id_header,
         )
         self.app.asgi_app = correlation_app
+
+    def _setup_tracing_middleware(self, tracer_provider: Any) -> None:
+        """Wrap the ASGI app outermost, so the span is active for every hook."""
+        self.app.asgi_app = TracingMiddleware(  # type: ignore[assignment]
+            self.app.asgi_app,
+            excluded_paths=self.config.excluded_paths,
+            tracer_provider=tracer_provider,
+        )
+
+    @staticmethod
+    def _annotate_span() -> None:
+        rule = request.url_rule.rule if request.url_rule else None
+        annotate_server_span(
+            request.method, rule, getattr(request, "observability_correlation_id", None)
+        )
 
     def _register_hooks(self):
         """Register Quart before_request and after_request hooks."""
@@ -67,6 +93,8 @@ class QuartMiddleware(BaseMiddleware):
             # Check if this path was excluded
             if getattr(request, "observability_excluded", False):
                 return response
+
+            self._annotate_span()
 
             # Check if we have request data (might not if before_request wasn't called)
             if not hasattr(request, "observability_start_time"):
@@ -139,6 +167,8 @@ class QuartMiddleware(BaseMiddleware):
             if getattr(request, "observability_excluded", False):
                 raise
 
+            self._annotate_span()
+
             # Check if we have request data
             if hasattr(request, "observability_start_time"):
                 duration_ms = (time.time() - request.observability_start_time) * 1000
@@ -186,15 +216,20 @@ class QuartMiddleware(BaseMiddleware):
         )
 
 
-def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
+def create_middleware(
+    app: Quart, config: ObservabilityConfig, tracer_provider: Any = None
+) -> Quart:
     """
     Create and configure the complete Quart middleware stack.
 
-    This function sets up correlation ID middleware and logging hooks.
+    This function sets up correlation ID middleware and logging hooks, and
+    the tracing middleware when ``config.tracing`` is set.
 
     Args:
         app: Quart application
         config: Observability configuration
+        tracer_provider: Used only with ``config.tracing``; defaults to the
+            global provider
 
     Returns:
         The configured Quart application
@@ -218,6 +253,6 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
     _set_correlation_header(config.correlation_id_header)
 
     # Create and register the middleware
-    QuartMiddleware(app, config)
+    QuartMiddleware(app, config, tracer_provider)
 
     return app

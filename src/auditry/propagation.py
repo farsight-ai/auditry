@@ -13,6 +13,11 @@ helpers here so the ID survives every boundary:
 - SQS/SNS: ``sqs_message_attributes()`` on send, ``bind_from_sqs_message()``
   on receive.
 
+With the ``otel`` extra, ``outbound_headers()`` and ``with_correlation`` also
+carry the W3C trace context (``traceparent``/``tracestate``), so a trace
+continues across the hop (see ``auditry.otel_context``). The SQS helpers
+carry only the correlation ID.
+
 IDs are always random UUID4s — opaque, never derived from user data — and
 services propagate an inbound ID rather than generating a fresh one
 mid-chain, so one ID follows a request across every service.
@@ -26,6 +31,14 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional, TypeVar
 
 from asgi_correlation_id import correlation_id
+
+from .otel_context import (
+    TRACE_CONTEXT_FIELDS,
+    attach_trace_context,
+    consumer_span,
+    detach_trace_context,
+    trace_context,
+)
 
 __all__ = [
     "bind_correlation_id",
@@ -141,6 +154,7 @@ def outbound_headers(
     headers/metadata, so vendor-side audit trails line up with your logs.
     """
     headers = dict(extra) if extra else {}
+    headers.update(trace_context())
     headers[header_name or correlation_header_name()] = ensure_correlation_id()
     return headers
 
@@ -200,47 +214,65 @@ def with_correlation(func: F) -> F:
     current context (e.g. by ``bind_from_sqs_message`` in a consumer loop),
     else a fresh random ID. An ID that is already in flight is propagated,
     never replaced. The kwarg is left in place if the wrapped function
-    accepts it, and stripped otherwise.
+    accepts it, and stripped otherwise. ``traceparent``/``tracestate``
+    kwargs are handled the same way and continue the producer's trace, so a
+    producer passes ``correlation_id=ensure_correlation_id(), **trace_context()``.
 
     The binding is scoped to the task: the previous correlation context is
     restored when the task returns or raises, so a long-lived worker never
-    logs a completed task's ID against later, unrelated work.
+    logs a completed task's ID against later, unrelated work. With the
+    ``otel`` extra the task runs in a CONSUMER span named
+    ``process <function name>``.
 
     ```python
     @with_correlation
     async def process_job(ctx, job_spec, correlation_id=None): ...
     ```
     """
+    span_name = f"process {func.__name__}"
     params = inspect.signature(func).parameters
-    accepts_kwarg = "correlation_id" in params or any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+    accepts_var_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    stripped_kwargs = [
+        name
+        for name in ("correlation_id", *TRACE_CONTEXT_FIELDS)
+        if name not in params and not accepts_var_kwargs
+    ]
 
-    def _bind(kwargs: dict[str, Any]) -> Any:
+    def _bind(kwargs: dict[str, Any]) -> tuple[Any, Any]:
         cid = kwargs.get("correlation_id") or correlation_id.get() or _new_id()
         token = correlation_id.set(cid)
-        if not accepts_kwarg:
-            kwargs.pop("correlation_id", None)
-        return token
+        trace_token = attach_trace_context(
+            {name: kwargs[name] for name in TRACE_CONTEXT_FIELDS if kwargs.get(name)}
+        )
+        for name in stripped_kwargs:
+            kwargs.pop(name, None)
+        return token, trace_token
+
+    def _unbind(tokens: tuple[Any, Any]) -> None:
+        token, trace_token = tokens
+        detach_trace_context(trace_token)
+        correlation_id.reset(token)
 
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            token = _bind(kwargs)
+            tokens = _bind(kwargs)
             try:
-                return await func(*args, **kwargs)
+                with consumer_span(span_name, correlation_id.get()):
+                    return await func(*args, **kwargs)
             finally:
-                correlation_id.reset(token)
+                _unbind(tokens)
 
         return async_wrapper  # type: ignore[return-value]
 
     @functools.wraps(func)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-        token = _bind(kwargs)
+        tokens = _bind(kwargs)
         try:
-            return func(*args, **kwargs)
+            with consumer_span(span_name, correlation_id.get()):
+                return func(*args, **kwargs)
         finally:
-            correlation_id.reset(token)
+            _unbind(tokens)
 
     return sync_wrapper  # type: ignore[return-value]

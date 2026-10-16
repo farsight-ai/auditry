@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.6.0 (2026-10-16)
+
+Optional OpenTelemetry tracing. Nothing changes for services that don't opt
+in: trace context is only propagated with the `otel` extra installed, not
+with the `opentelemetry-api` package that FastAPI pulls in. Core auditry still supports Python 3.9; the `otel` extra needs 3.10+,
+because current OpenTelemetry releases do. On 3.9 the extra installs nothing
+and `tracing=True` fails at startup.
+
+### Added
+
+- `auditry[otel]` extra and `ObservabilityConfig(tracing=True)`: one server
+  span per request, named by route template and tagged with `correlation_id`.
+  `excluded_paths` are not traced. `tracing=True` without the extra fails at
+  startup.
+- `auditry.otel.configure_tracing(...)` / `build_tracer_provider(...)`: a
+  tracer provider exporting over OTLP/HTTP through `RedactingSpanExporter`,
+  which keeps spans OPERATIONAL-only: it removes exception messages and
+  stack traces, status descriptions, full URLs and query strings, header
+  attributes, client address, user agent, and attributes matching the
+  redaction or forbidden-dimension patterns or `content`, and replaces raw
+  paths with the route template.
+- `trace_id` and `span_id` on every log line inside a span.
+- `outbound_headers()` carries `traceparent` / `tracestate` when a span is
+  active, and `with_correlation` continues the inbound trace. The SQS
+  helpers carry only the correlation ID, as before.
+- Worker spans: `@with_correlation` runs each job in a CONSUMER span, child
+  of the producer's span, named `process <function name>`.
+- `trace_context()`: the active span's `traceparent`/`tracestate`, for job
+  kwargs and other carriers.
+- `create_middleware(..., tracer_provider=...)` for both frameworks.
+- Span redaction levels: `configure_tracing(redaction_level=...)` /
+  `build_tracer_provider(redaction_level=...)` or the
+  `AUDITRY_TRACE_REDACTION` env var, one of `none`, `low`, `medium`, `high`
+  (default). See `auditry.otel.RedactionLevel`.
+- CI: a `tests-without-otel` job runs the suite on Python 3.9 and 3.12
+  without the `otel` extra.
+
+### Fixed
+
+- `auditry.__version__` reported 0.4.0 in the 0.5.0 release.
+
 ## 0.5.0 (2026-09-30)
 
 The 0.4.0 wheel on PyPI was built before the full 0.4.0 changes merged, so two

@@ -1,6 +1,6 @@
 [project]
 name = "auditry"
-version = "0.5.0"
+version = "0.6.0"
 description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, and sensitive data redaction"
 authors = [
     {name = "Ilana Zane", email = "ilana@farsight-ai.com"},
@@ -9,7 +9,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
-keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction"]
+keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction", "opentelemetry", "tracing"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -38,10 +38,24 @@ fastapi = [
 quart = [
     "quart>=0.18.0",
 ]
+# Tracing. Exports over OTLP/HTTP (protobuf), which avoids the grpcio wheel
+# and is accepted by OTLP collectors and backends generally. OpenTelemetry
+# requires Python 3.10+, so on 3.9 the extra installs nothing and
+# ObservabilityConfig(tracing=True) fails at startup.
+otel = [
+    "opentelemetry-api>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-sdk>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-exporter-otlp-proto-http>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-instrumentation-asgi>=0.63b0; python_version >= '3.10'",
+]
 all = [
     "fastapi>=0.100.0",
     "starlette>=0.27.0",
     "quart>=0.18.0",
+    "opentelemetry-api>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-sdk>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-exporter-otlp-proto-http>=1.42.0; python_version >= '3.10'",
+    "opentelemetry-instrumentation-asgi>=0.63b0; python_version >= '3.10'",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -71,7 +85,7 @@ requires = ["setuptools>=61.0,<70.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.quart"]
+packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.otel", "auditry.quart"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
