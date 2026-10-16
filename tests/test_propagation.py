@@ -2,6 +2,7 @@
 HTTP, and SQS/SNS boundaries."""
 
 import asyncio
+import functools
 import uuid
 
 import pytest
@@ -190,6 +191,27 @@ class TestDecorator:
             return correlation_id.get()
 
         assert uuid.UUID(task("x")).version == 4
+
+    def test_decorates_partials_and_callable_instances(self):
+        def task(data):
+            return correlation_id.get()
+
+        class Job:
+            def __call__(self, data):
+                return correlation_id.get()
+
+        assert with_correlation(functools.partial(task, "x"))(correlation_id="p1") == "p1"
+        assert with_correlation(Job())("x", correlation_id="j1") == "j1"
+
+    def test_strips_kwarg_a_positional_only_parameter_cannot_take(self):
+        def bound():
+            return correlation_id.get()
+
+        @with_correlation
+        def task(correlation_id=None, /):
+            return correlation_id, bound()
+
+        assert task(correlation_id="job-11") == (None, "job-11")
 
     def test_propagates_an_id_already_bound_in_context(self):
         """The documented SQS pattern: bind_from_sqs_message() in the consumer

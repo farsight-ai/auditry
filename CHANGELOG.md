@@ -40,6 +40,9 @@ and `tracing=True` fails at startup.
 ### Fixed
 
 - `auditry.__version__` reported 0.4.0 in the 0.5.0 release.
+- `@with_correlation` on a task whose `correlation_id` parameter is
+  positional-only raised `TypeError` when a producer passed the kwarg; the
+  kwarg is now stripped as for a task without the parameter.
 
 ## 0.5.0 (2026-09-30)
 

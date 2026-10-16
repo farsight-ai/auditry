@@ -229,13 +229,18 @@ def with_correlation(func: F) -> F:
     async def process_job(ctx, job_spec, correlation_id=None): ...
     ```
     """
-    span_name = f"process {func.__name__}"
+    # A partial or callable instance has no __name__; its type names the span.
+    span_name = f"process {getattr(func, '__name__', type(func).__name__)}"
     params = inspect.signature(func).parameters
     accepts_var_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    # A positional-only parameter cannot receive the kwarg, so it does not count.
+    keyword_params = {
+        name for name, p in params.items() if p.kind is not inspect.Parameter.POSITIONAL_ONLY
+    }
     stripped_kwargs = [
         name
         for name in ("correlation_id", *TRACE_CONTEXT_FIELDS)
-        if name not in params and not accepts_var_kwargs
+        if name not in keyword_params and not accepts_var_kwargs
     ]
 
     def _bind(kwargs: dict[str, Any]) -> tuple[Any, Any]:
