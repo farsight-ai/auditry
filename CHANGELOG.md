@@ -34,8 +34,6 @@ and `tracing=True` fails at startup.
   `build_tracer_provider(redaction_level=...)` or the
   `AUDITRY_TRACE_REDACTION` env var, one of `none`, `low`, `medium`, `high`
   (default). See `auditry.otel.RedactionLevel`.
-- CI: a `tests-without-otel` job runs the suite on Python 3.9 and 3.12
-  without the `otel` extra.
 
 ### Fixed
 

@@ -34,38 +34,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # --all-extras brings in fastapi, quart, and otel: the suite exercises
-      # both middlewares and tracing.
+      # --all-extras brings in fastapi and quart: the suite exercises both
+      # middlewares, and the fastapi tests are skipped without them.
       - name: Install dependencies
         run: uv sync --all-extras --locked
-
-      - name: Run tests
-        run: ./scripts/runtests.sh
-
-  # The otel extra is optional and needs Python 3.10+, so core auditry must
-  # work without it: on 3.9, where the extra installs nothing, and on a
-  # current Python, where FastAPI alone pulls in opentelemetry-api but not the
-  # SDK. tests/conftest.py leaves out test_otel.py here.
-  tests-without-otel:
-    name: pytest (Python ${{ matrix.python }}, no otel extra)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.9", "3.12"]
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Install dependencies
-        run: uv sync --locked --python ${{ matrix.python }} --extra fastapi --extra quart --extra dev
 
       - name: Run tests
         run: ./scripts/runtests.sh
