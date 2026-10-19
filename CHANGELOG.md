@@ -38,8 +38,16 @@ and `tracing=True` fails at startup.
   provider or `@with_correlation(tracer_provider=...)`. The span records no
   exception event, only ERROR status and `error.type`, so a provider that
   does not redact never receives the message or stack trace.
-- On FastAPI 0.142+, which traces requests natively, `tracing=True` turns
-  FastAPI's own request tracing off, so a request is traced once.
+- On FastAPI 0.142+, `tracing=True` turns all of FastAPI's built-in request
+  telemetry off, so a request is traced once: its spans, its exception log
+  records, and its `http.server.request.duration` (seconds) and
+  `http.server.active_requests` metrics. The ASGI middleware records
+  `http.server.duration` (milliseconds), `http.server.active_requests`, and
+  `http.server.response.size` instead; `OTEL_SEMCONV_STABILITY_OPT_IN=http`
+  restores `http.server.request.duration` and renames response size to
+  `http.server.response.body.size`.
+- Span processors added to auditry's tracer provider after it is built
+  receive redacted spans. FastAPI's auto-configure adds one.
 - `trace_id` and `span_id` are reserved metric and dimension names.
 - `trace_context()`: the active span's `traceparent`/`tracestate`, for job
   kwargs and other carriers.
@@ -52,6 +60,9 @@ and `tracing=True` fails at startup.
 ### Fixed
 
 - `auditry.__version__` reported 0.4.0 in the 0.5.0 release.
+- `outbound_headers(extra=...)` sent two request-ID headers when `extra`
+  spelled the correlation header in another case (e.g. forwarded Starlette
+  headers carry `x-request-id`). Any spelling in `extra` is now replaced.
 - `@with_correlation` on a task whose `correlation_id` parameter is
   positional-only raised `TypeError` when a producer passed the kwarg; the
   kwarg is now stripped as for a task without the parameter.

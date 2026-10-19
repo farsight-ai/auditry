@@ -1,20 +1,34 @@
 """Tracer provider setup with redaction always in the export path."""
 
 from collections.abc import Iterable
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.sampling import Sampler
 
 from ..logging_config import resolve_service_context
 from ..otel_context import _enable_tracing
-from .exporter import RedactingSpanExporter, RedactionLevel
+from .exporter import RedactingSpanExporter, RedactionLevel, _RedactingSpanProcessor
 
 __all__ = ["build_tracer_provider", "configure_tracing"]
+
+
+class _RedactingTracerProvider(TracerProvider):
+    """A tracer provider whose span processors all receive redacted spans,
+    including ones added after it is built."""
+
+    def __init__(self, redactor: RedactingSpanExporter, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._redactor = redactor
+        # The redactor's own batch is redacted on export, so it is not wrapped.
+        super().add_span_processor(BatchSpanProcessor(redactor))
+
+    def add_span_processor(self, span_processor: SpanProcessor) -> None:
+        super().add_span_processor(_RedactingSpanProcessor(span_processor, self._redactor))
 
 
 # Keyword-only settings, each optional with its own fallback; grouping them
@@ -31,7 +45,9 @@ def build_tracer_provider(  # noqa: PLR0913
 ) -> TracerProvider:
     """
     A tracer provider whose spans always pass through
-    :class:`~auditry.otel.exporter.RedactingSpanExporter`.
+    :class:`~auditry.otel.exporter.RedactingSpanExporter`, including spans
+    handed to span processors added later (FastAPI's auto-configure adds an
+    OTLP exporter to the global provider at startup).
 
     ``service``/``version``/``environment`` resolve like
     :func:`auditry.configure_logging`, so spans and log lines agree. The
@@ -59,14 +75,10 @@ def build_tracer_provider(  # noqa: PLR0913
             if value
         }
     )
-    provider = TracerProvider(resource=resource, sampler=sampler)
-    provider.add_span_processor(
-        BatchSpanProcessor(
-            RedactingSpanExporter(
-                exporter or OTLPSpanExporter(), additional_redaction_patterns, redaction_level
-            )
-        )
+    redactor = RedactingSpanExporter(
+        exporter or OTLPSpanExporter(), additional_redaction_patterns, redaction_level
     )
+    provider = _RedactingTracerProvider(redactor, resource=resource, sampler=sampler)
     _enable_tracing()
     return provider
 

@@ -18,8 +18,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional
 
-# Modules only the otel extra installs; opentelemetry-api alone is not opt-in.
-_OTEL_EXTRA_MODULES = ("opentelemetry.sdk", "opentelemetry.instrumentation.asgi")
+# Every module auditry.otel imports beyond opentelemetry-api, which alone is
+# not opt-in. A service with its own OpenTelemetry setup can have some of them
+# (the SDK, the ASGI instrumentation) without the OTLP/HTTP exporter.
+_OTEL_EXTRA_MODULES = (
+    "opentelemetry.sdk",
+    "opentelemetry.instrumentation.asgi",
+    "opentelemetry.exporter.otlp.proto.http",
+)
 
 
 def otel_extra_installed() -> bool:

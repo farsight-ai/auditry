@@ -3,6 +3,7 @@ redaction, and trace-context propagation."""
 
 import importlib.util
 import json
+import subprocess
 import sys
 
 import pytest
@@ -10,6 +11,7 @@ from asgi_correlation_id import correlation_id
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from opentelemetry import trace as otel_trace
+from opentelemetry.exporter.otlp.proto.http import trace_exporter as otlp_trace_exporter
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter
@@ -297,6 +299,33 @@ class TestFastAPINativeTelemetry:
         assert span.name == "GET /items/{item_id}"
 
     @pytest.mark.skipif(not FASTAPI_NATIVE_TELEMETRY, reason="FastAPI < 0.142")
+    def test_auto_configured_exporter_receives_redacted_spans(self, tracing, monkeypatch):
+        auto_exported = InMemorySpanExporter()
+        monkeypatch.setattr(otlp_trace_exporter, "OTLPSpanExporter", lambda **_: auto_exported)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:9/v1/traces")
+        app = FastAPI(
+            telemetry={
+                "auto_configure": True,
+                "tracer_provider": tracing.provider,
+                "metrics": False,
+                "logs": False,
+            }
+        )
+        create_fastapi_middleware(app, _config(), tracer_provider=tracing.provider)
+
+        @app.get("/fail/{item_id}")
+        async def fail(item_id: str):
+            raise ValueError(f"customer secret {SECRET}")
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            client.get(f"/fail/1?access_token={SECRET}")
+        tracing.provider.force_flush()
+        spans = auto_exported.get_finished_spans()
+        assert spans
+        for span in spans:
+            assert SECRET not in span.to_json()
+
+    @pytest.mark.skipif(not FASTAPI_NATIVE_TELEMETRY, reason="FastAPI < 0.142")
     def test_excluded_path_is_not_traced_natively_either(self, tracing):
         app = FastAPI(telemetry={"tracer_provider": tracing.provider})
         create_fastapi_middleware(app, _config(), tracer_provider=tracing.provider)
@@ -352,6 +381,16 @@ class TestQuartSpans:
 class TestNotOptedIn:
     """Another library's provider (Langfuse installs the SDK and sets one)
     must see no change from auditry until the service opts in."""
+
+    def test_own_otel_setup_without_the_otlp_http_exporter_imports(self):
+        # A service with the SDK and ASGI instrumentation but a different
+        # exporter: OTEL_AVAILABLE must be False, not a failed import.
+        code = (
+            "import sys; sys.modules['opentelemetry.exporter.otlp.proto.http'] = None; "
+            "import auditry.fastapi, auditry.quart, auditry.otel_context as c; "
+            "assert not c.OTEL_AVAILABLE"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True)
 
     def test_log_lines_carry_no_trace_ids(self, foreign, capsys):
         _capture_logs()
@@ -498,6 +537,16 @@ class TestSpansDoNotLeak:
         provider.force_flush()
         (exported,) = memory.get_finished_spans()
         assert "app.account_number" not in exported.attributes
+
+    def test_span_processors_added_later_receive_redacted_spans(self, tracing):
+        late = InMemorySpanExporter()
+        tracing.provider.add_span_processor(SimpleSpanProcessor(late))
+        with tracing.tracer.start_as_current_span("work") as span:
+            span.set_attributes({"auth.token": SECRET, "server.address": "h"})
+            span.set_status(Status(StatusCode.ERROR, SECRET))
+        (exported,) = late.get_finished_spans()
+        assert dict(exported.attributes) == {"server.address": "h"}
+        assert SECRET not in exported.to_json()
 
     def test_config_patterns_apply_to_spans_at_export_time(self, tracing):
         _fastapi_app(tracing, additional_redaction_patterns=["account_number"])
@@ -727,6 +776,11 @@ class TestPropagation:
         assert [k for k in headers if k.lower() in ("traceparent", "tracestate")] == ["traceparent"]
         assert headers["traceparent"] != TRACEPARENT
         assert headers["X-Other"] == "1"
+
+    def test_correlation_header_replaces_extra_in_any_case(self):
+        headers = outbound_headers(extra={"x-request-id": "stale"})
+        assert [k for k in headers if k.lower() == "x-request-id"] == ["X-Request-ID"]
+        assert headers["X-Request-ID"] != "stale"
 
     def test_extra_trace_headers_pass_through_outside_a_span(self):
         assert outbound_headers(extra={"Traceparent": TRACEPARENT})["Traceparent"] == TRACEPARENT

@@ -153,17 +153,19 @@ def outbound_headers(
     Also attach these to third-party API calls where the SDK allows custom
     headers/metadata, so vendor-side audit trails line up with your logs.
 
-    Inside a span, with tracing enabled, the active
-    ``traceparent``/``tracestate`` replace any passed in ``extra``.
+    Headers auditry sets replace any passed in ``extra`` under any
+    capitalization: the correlation header always, and, inside a span with
+    tracing enabled, ``traceparent``/``tracestate``.
     """
-    headers = dict(extra) if extra else {}
+    name = header_name or correlation_header_name()
     active = trace_context()
-    if active:
-        # Header names are case-insensitive, and a tracestate from another
-        # trace must not ride along with this traceparent.
-        headers = {k: v for k, v in headers.items() if k.lower() not in TRACE_CONTEXT_FIELDS}
-        headers.update(active)
-    headers[header_name or correlation_header_name()] = ensure_correlation_id()
+    # Header names are case-insensitive, so any spelling of a header set here
+    # is dropped from extra. A tracestate from another trace must not ride
+    # along with this traceparent, so both go whenever a trace is active.
+    replaced = {name.lower(), *(TRACE_CONTEXT_FIELDS if active else ())}
+    headers = {k: v for k, v in (extra or {}).items() if k.lower() not in replaced}
+    headers.update(active)
+    headers[name] = ensure_correlation_id()
     return headers
 
 

@@ -377,8 +377,19 @@ two services and a worker, to a local Grafana (`grafana/otel-lgtm`) or stderr.
   and runs the job in a `process <function name>` CONSUMER span, from the
   global provider or `@with_correlation(tracer_provider=provider)`. The span
   carries ERROR status and `error.type` on failure, never an exception event.
-- **FastAPI 0.142+** traces requests natively; with `tracing=True` auditry's
-  span replaces FastAPI's, so each request is traced once.
+- **FastAPI 0.142+** has built-in request telemetry. With `tracing=True`
+  FastAPI turns all of it off, not only its spans, so each request is traced
+  once:
+  - FastAPI's `http.server.request.duration` (seconds) and
+    `http.server.active_requests` metrics stop. The OpenTelemetry ASGI
+    middleware records `http.server.duration` (milliseconds),
+    `http.server.active_requests`, and `http.server.response.size` instead.
+    Set `OTEL_SEMCONV_STABILITY_OPT_IN=http` to get
+    `http.server.request.duration` (seconds) back; response size is then
+    `http.server.response.body.size`. Update dashboards and alarms built on
+    the FastAPI series.
+  - FastAPI's exception log records stop; auditry's request log line still
+    records the `error_type`.
 
 Baggage is never propagated, and the SQS helpers carry only the correlation
 ID. For a queue, put `trace_context()` into the message attributes on send,
@@ -432,7 +443,12 @@ BotocoreInstrumentor().instrument(tracer_provider=provider)
 ### Custom Exporter or Provider
 
 `configure_tracing(exporter=...)` takes any `SpanExporter` and still wraps it
-in `RedactingSpanExporter`. `build_tracer_provider(...)` returns a provider
+in `RedactingSpanExporter`. Span processors added to the provider later also
+receive redacted spans. FastAPI 0.142+ adds one when auto-configure is on
+(`FASTAPI_OTEL_AUTO_CONFIGURE=true` or `FastAPI(telemetry={"auto_configure":
+True})`) and an OTLP endpoint is set; since `configure_tracing` already
+exports there, that sends every span twice. Pass
+`FastAPI(telemetry={"auto_configure": False})` next to `configure_tracing`. `build_tracer_provider(...)` returns a provider
 without installing it globally; pass it as `create_middleware(...,
 tracer_provider=...)` and `@with_correlation(tracer_provider=...)`, e.g. when
 another library owns the global provider, or with `InMemorySpanExporter` in

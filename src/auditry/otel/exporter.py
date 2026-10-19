@@ -6,7 +6,8 @@ from enum import Enum
 from typing import Any, Optional, Union
 from urllib.parse import urlsplit, urlunsplit
 
-from opentelemetry.sdk.trace import Event, ReadableSpan
+from opentelemetry.context import Context
+from opentelemetry.sdk.trace import Event, ReadableSpan, Span, SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import Link, Status
 
@@ -207,19 +208,25 @@ class RedactingSpanExporter(SpanExporter):
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
-            if self._level is not RedactionLevel.NONE:
-                custom = self._custom_patterns + self._registered_patterns()
-                spans = [self._redact_span(span, custom) for span in spans]
-            return self._exporter.export(spans)
+            return self._exporter.export(self.redact(spans))
         except Exception as error:
-            if is_strict():
-                raise
-            if type(error) not in self._warned:
-                self._warned.add(type(error))
-                _logger.warning(
-                    "span export failed; dropping batch", error_type=type(error).__name__
-                )
+            self._report(error, "span export failed; dropping batch")
             return SpanExportResult.FAILURE
+
+    def redact(self, spans: Sequence[ReadableSpan]) -> Sequence[ReadableSpan]:
+        """``spans`` with customer data removed, per :attr:`level`."""
+        if self._level is RedactionLevel.NONE:
+            return spans
+        custom = self._custom_patterns + self._registered_patterns()
+        return [self._redact_span(span, custom) for span in spans]
+
+    def _report(self, error: Exception, message: str) -> None:
+        """Raise in strict mode; otherwise warn once per error type."""
+        if is_strict():
+            raise error
+        if type(error) not in self._warned:
+            self._warned.add(type(error))
+            _logger.warning(message, error_type=type(error).__name__)
 
     def shutdown(self) -> None:
         self._exporter.shutdown()
@@ -294,3 +301,39 @@ class RedactingSpanExporter(SpanExporter):
         if key in _SAFE_ATTRIBUTES:
             return False
         return any(pattern in normalized for pattern in self._patterns)
+
+
+class _RedactingSpanProcessor(SpanProcessor):
+    """
+    Hands ``processor`` spans redacted by ``redactor``. auditry's tracer
+    provider wraps every processor added after it is built in one of these:
+    FastAPI's auto-configure, for one, adds an OTLP exporter to the global
+    provider at startup.
+
+    A span that fails to redact is dropped, with the same warning and strict
+    behavior as :class:`RedactingSpanExporter`.
+    """
+
+    def __init__(self, processor: SpanProcessor, redactor: RedactingSpanExporter) -> None:
+        self._processor = processor
+        self._redactor = redactor
+
+    def on_start(self, span: Span, parent_context: Optional[Context] = None) -> None:
+        self._processor.on_start(span, parent_context=parent_context)
+
+    def _on_ending(self, span: Span) -> None:
+        self._processor._on_ending(span)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        try:
+            (redacted,) = self._redactor.redact([span])
+        except Exception as error:
+            self._redactor._report(error, "span redaction failed; dropping span")
+            return
+        self._processor.on_end(redacted)
+
+    def shutdown(self) -> None:
+        self._processor.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._processor.force_flush(timeout_millis)
