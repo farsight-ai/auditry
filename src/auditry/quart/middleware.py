@@ -4,6 +4,7 @@ import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from quart import Quart, Request, Response, request
+from quart.signals import got_request_exception
 from quart.wrappers.response import IterableBody
 
 from ..core import BaseMiddleware, RequestResponseLogger
@@ -12,6 +13,8 @@ from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
+from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
+from ..tracing import require_otel, set_span_correlation_id
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
 
 
@@ -38,11 +41,14 @@ class QuartMiddleware(BaseMiddleware):
         self.app.asgi_app = correlation_app
 
     def _register_hooks(self):
-        """Register Quart before_request and after_request hooks."""
+        """Register Quart before_request and after_request hooks, and the
+        unhandled-exception receiver."""
 
         @self.app.before_request
         async def capture_request_start():
             """Hook for request start."""
+            set_span_correlation_id(get_correlation_id())
+
             # Early exit for excluded paths
             if should_exclude_path(request.path, request.method, self.config.excluded_paths):
                 request.observability_excluded = True
@@ -66,6 +72,11 @@ class QuartMiddleware(BaseMiddleware):
             """Log the request/response after processing."""
             # Check if this path was excluded
             if getattr(request, "observability_excluded", False):
+                return response
+
+            # The 500 for an unhandled exception passes through here too; it
+            # was already logged as a failure.
+            if getattr(request, "observability_error_logged", False):
                 return response
 
             # Check if we have request data (might not if before_request wasn't called)
@@ -132,36 +143,47 @@ class QuartMiddleware(BaseMiddleware):
 
             return response
 
-        @self.app.errorhandler(Exception)
-        async def handle_exception(error: Exception):
-            """Log errors with request context."""
+        async def log_request_exception(
+            sender: Quart, exception: Exception, **extra: object
+        ) -> None:
+            """Log an unhandled exception with request context.
+
+            A signal receiver rather than an error handler, so Quart still
+            builds the response: HTTP errors (404, abort(403)) keep their
+            status and are logged by after_request like any response, and
+            the app's own error handlers still run.
+            """
             # Check if this path was excluded
             if getattr(request, "observability_excluded", False):
-                raise
+                return
 
             # Check if we have request data
-            if hasattr(request, "observability_start_time"):
-                duration_ms = (time.time() - request.observability_start_time) * 1000
-                correlation_id = getattr(request, "observability_correlation_id", None)
-                request_data = getattr(request, "observability_request_data", {})
+            if not hasattr(request, "observability_start_time"):
+                return
 
-                # Get user_id if available
-                user_id = await self.request_adapter.extract_user_id(request)
+            duration_ms = (time.time() - request.observability_start_time) * 1000
+            correlation_id = getattr(request, "observability_correlation_id", None)
+            request_data = getattr(request, "observability_request_data", {})
 
-                # Log the error
-                self.logger.log_error(
-                    request_data=request_data,
-                    error=error,
-                    duration_ms=duration_ms,
-                    correlation_id=correlation_id,
-                    user_id=user_id,
-                )
+            # Get user_id if available
+            user_id = await self.request_adapter.extract_user_id(request)
 
-                # Clear cache
-                self.request_adapter.clear_cache(request)
+            # Log the error
+            self.logger.log_error(
+                request_data=request_data,
+                error=exception,
+                duration_ms=duration_ms,
+                correlation_id=correlation_id,
+                user_id=user_id,
+            )
+            request.observability_error_logged = True
 
-            # Re-raise for Quart's error handlers
-            raise
+            # Clear cache
+            self.request_adapter.clear_cache(request)
+
+        # The signal is process-wide: sender= limits it to this app's
+        # requests. weak=False because nothing else references the closure.
+        got_request_exception.connect(log_request_exception, sender=self.app, weak=False)
 
     async def process_request(self, request: Request, call_next) -> Response:
         """
@@ -190,7 +212,9 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
     """
     Create and configure the complete Quart middleware stack.
 
-    This function sets up correlation ID middleware and logging hooks.
+    This function sets up correlation ID middleware and logging hooks, and,
+    with ``config.tracing.instrument_server``, an OpenTelemetry server span
+    per request (requires the ``otel`` extra).
 
     Args:
         app: Quart application
@@ -215,9 +239,18 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         ```
     """
     _set_config_service(config.service_name)
+    set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
 
     # Create and register the middleware
     QuartMiddleware(app, config)
+
+    if config.tracing.instrument_server:
+        require_otel("tracing.instrument_server", "opentelemetry.instrumentation.asgi")
+        from .tracing import instrument_quart
+
+        # After QuartMiddleware's CorrelationIdMiddleware wrap, so the span
+        # is the outermost layer and active in every hook.
+        instrument_quart(app, config)
 
     return app

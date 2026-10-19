@@ -8,6 +8,8 @@ from fastapi.responses import StreamingResponse
 from quart import Quart, Response, stream_with_context
 from src.auditry import ObservabilityConfig, configure_logging
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
+from src.auditry.models import DEFAULT_EXCLUDED_PATHS
+from src.auditry.path_matcher import excluded_paths_to_url_patterns, should_exclude_path
 from src.auditry.quart import create_middleware as create_quart_middleware
 
 
@@ -292,3 +294,87 @@ def test_method_specific():
     assert should_exclude_path("/health", "GET", cfg)
     assert not should_exclude_path("/health", "POST", cfg)
     assert should_exclude_path("/admin/users", "DELETE", cfg)
+
+
+EQUIVALENCE_PATTERNS = [
+    *DEFAULT_EXCLUDED_PATHS,
+    "/metrics",
+    "/stream*",
+    "/api/*/internal",
+    "/admin/",
+    "/webhook/*",
+    "/item?",
+    "/v?/status",
+    "*health",
+]
+
+EQUIVALENCE_PATHS = [
+    "/",
+    "/health",
+    "/health/",
+    "/healthz",
+    "/health/deep",
+    "/api/health",
+    "/metrics",
+    "/metricsx",
+    "/stream",
+    "/streaming",
+    "/stream/events",
+    "/api/v1/internal",
+    "/api/v1/internal/x",
+    "/api/internal",
+    "/admin",
+    "/admin/",
+    "/admin/users/1",
+    "/webhook",
+    "/webhook/stripe",
+    "/item",
+    "/items",
+    "/itemss",
+    "/v1/status",
+    "/v12/status",
+    "/selfhealth",
+    "/files/q3.pdf",
+]
+
+
+@pytest.mark.parametrize("path", EQUIVALENCE_PATHS)
+@pytest.mark.parametrize("pattern", EQUIVALENCE_PATTERNS)
+def test_url_patterns_match_what_should_exclude_path_matches(pattern, path):
+    """OpenTelemetry's ExcludeList, fed the translated patterns, skips
+    exactly the paths request logging skips."""
+    http_util = pytest.importorskip("opentelemetry.util.http")
+
+    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns([pattern]))
+    expected = should_exclude_path(path, "GET", [pattern])
+    assert exclude_list.url_disabled("http://host" + path) is expected
+    assert exclude_list.url_disabled("https://api.example.com:8443" + path) is expected
+
+
+def test_url_patterns_for_the_whole_default_list():
+    http_util = pytest.importorskip("opentelemetry.util.http")
+
+    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns(DEFAULT_EXCLUDED_PATHS))
+    for path in EQUIVALENCE_PATHS:
+        expected = should_exclude_path(path, "GET", DEFAULT_EXCLUDED_PATHS)
+        assert exclude_list.url_disabled("http://host" + path) is expected, path
+
+
+def test_url_patterns_ignore_the_host():
+    http_util = pytest.importorskip("opentelemetry.util.http")
+
+    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns(["th/", "health"]))
+    assert not exclude_list.url_disabled("http://health/x")
+    assert not exclude_list.url_disabled("http://xhealth/")
+
+
+def test_url_patterns_dict_form_uses_only_the_all_methods_key():
+    patterns = excluded_paths_to_url_patterns({"GET": ["/health"], "*": ["/admin/"]})
+    assert len(patterns) == 1
+    assert excluded_paths_to_url_patterns({"GET": ["/health"]}) == []
+    assert excluded_paths_to_url_patterns(None) == []
+
+
+def test_url_patterns_reject_commas():
+    with pytest.raises(ValueError, match="contains ','"):
+        excluded_paths_to_url_patterns(["/a,b"])

@@ -12,6 +12,15 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Request / Correlation IDs](#request--correlation-ids)
+- [Correlation Propagation Beyond HTTP](#correlation-propagation-beyond-http)
+- [Tracing (OpenTelemetry)](#tracing-opentelemetry)
+  - [Setup](#setup)
+  - [TracingConfig](#tracingconfig)
+  - [correlation_id vs trace_id](#correlation_id-vs-trace_id)
+  - [What Gets Scrubbed](#what-gets-scrubbed)
+  - [Operator Guidance](#operator-guidance)
+  - [Limitations](#limitations)
+- [Metrics (CloudWatch EMF)](#metrics-cloudwatch-emf)
 - [User Tracking](#user-tracking)
 - [Business Event Tagging (For Analytics)](#business-event-tagging-for-analytics)
 - [Log Output](#log-output)
@@ -30,6 +39,8 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
 
 ## Installation
 
+Requires Python 3.11 or later.
+
 ### For FastAPI
 
 ```bash
@@ -41,6 +52,14 @@ pip install auditry[fastapi]
 ```bash
 pip install auditry[quart]
 ```
+
+### For tracing (OpenTelemetry)
+
+```bash
+pip install auditry[otel]
+```
+
+See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 
 ### For everything
 
@@ -171,6 +190,15 @@ config = ObservabilityConfig(
 
     # Whether to log response bodies (same caveat as request bodies)
     log_response_body=False,
+
+    # OpenTelemetry tracing (requires auditry[otel]; from auditry import
+    # TracingConfig). See Tracing (OpenTelemetry).
+    tracing=TracingConfig(
+        instrument_server=False,     # start a server span per request
+        query_param_allowlist=[],    # query values allowed on exported spans
+        db_statement="sanitize",     # "sanitize" | "drop" | "keep"
+        keep_client_address=False,   # client IP/port on server spans
+    ),
 )
 
 # For FastAPI:
@@ -198,6 +226,10 @@ any context (import time, startup hooks). Consumers should treat the field as
 optional rather than assuming it on every line; auditry deliberately does not
 invent a per-line fallback ID, because each line would get a *different* ID,
 which falsely implies correlation.
+
+`trace_id` and `span_id` are optional in the same way: present only on lines
+written inside a valid OpenTelemetry span context (see
+[Tracing (OpenTelemetry)](#tracing-opentelemetry)), absent otherwise.
 
 ### Using Correlation IDs in Your Code
 
@@ -295,7 +327,7 @@ one-shot process, a startup hook), not per job in a long-lived worker.
 ### Queue Hops (SQS / SNS)
 
 ```python
-from auditry import bind_from_sqs_message, sqs_message_attributes
+from auditry import bind_from_sqs_message, bound_message_context, sqs_message_attributes
 
 # Producer
 sqs.send_message(
@@ -304,20 +336,228 @@ sqs.send_message(
     MessageAttributes=sqs_message_attributes(),
 )
 
-# Consumer — call this BEFORE the first log line
+# Consumer in a long-lived loop: binds this message's ID for the block,
+# then restores the previous context
 for message in response["Messages"]:
-    bind_from_sqs_message(message)
-    logger.info("processing message")
+    with bound_message_context(message):
+        logger.info("processing message")
+
+# A true edge (a one-shot process): call this BEFORE the first log line.
+# The binding is sticky.
+bind_from_sqs_message(message)
 ```
 
-`bind_from_sqs_message` falls back to a fresh ID when the attribute is absent,
-so a consumer never logs without one.
+Both fall back to a fresh ID when the attribute is absent, so a consumer never
+logs without one. With the `otel` extra installed, the same helpers also carry
+the W3C trace context; see [SQS and SNS](#sqs-and-sns).
 
 IDs that auditry *generates* are always random UUID4s — opaque, never derived
 from user data. Inbound IDs are propagated verbatim (that is the point of
 propagation), so the randomness guarantee holds end-to-end only when the
 edge service generated the ID. Don't accept correlation IDs from untrusted
 callers into systems that assume opacity.
+
+## Tracing (OpenTelemetry)
+
+With the `otel` extra (`pip install auditry[otel]`), auditry ties OpenTelemetry
+traces to its JSON logs and keeps sensitive data out of them:
+
+- **Log fields.** Every log line written inside a valid span context carries
+  `trace_id` and `span_id` (lowercase hex), so a log line opens its trace.
+- **Propagation.** `outbound_headers()` adds `traceparent` (and `tracestate`)
+  inside a span; `sqs_message_attributes()` adds them as message attributes.
+  Consumers read them back with `bound_message_context()`. auditry uses W3C
+  Trace Context only, whatever `OTEL_PROPAGATORS` says, and never sends
+  `baggage`.
+- **`correlation_id` on server spans.** The middleware records the request's
+  correlation ID as the span attribute `correlation_id`, on spans from auditry's
+  own server instrumentation or from yours.
+- **Scrubbing.** `ScrubbingSpanExporter` wraps your exporter and removes
+  credentials, PII, customer content, exception messages and stack traces from
+  every span before export, whichever instrumentation created it. See
+  [What Gets Scrubbed](#what-gets-scrubbed).
+- **Opt-in server spans** for FastAPI and Quart, named by route and honoring
+  `excluded_paths`.
+
+Without the extra, all of this is a no-op and the rest of auditry works as before.
+
+### Setup
+
+auditry does not create a `TracerProvider`; set one up and wrap its exporter:
+
+```python
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from auditry import ObservabilityConfig, TracingConfig
+from auditry.fastapi import create_middleware
+from auditry.otel import ScrubbingSpanExporter
+
+provider = TracerProvider(resource=Resource.create({"service.name": "my-service"}))
+provider.add_span_processor(BatchSpanProcessor(ScrubbingSpanExporter(OTLPSpanExporter())))
+trace.set_tracer_provider(provider)
+
+app = create_middleware(
+    app,
+    ObservabilityConfig(
+        service_name="my-service",
+        log_request_body=False,
+        log_response_body=False,
+        tracing=TracingConfig(instrument_server=True),
+    ),
+)
+```
+
+`ScrubbingSpanExporter(inner, policy=None)` takes any `SpanExporter`. Without a
+`policy`, it reads the one `create_middleware` derives from `ObservabilityConfig`
+at export time, so the order of the two calls does not matter.
+
+**Zero-code setup.** The package registers two exporters with the SDK, so
+`opentelemetry-instrument` can select them by name:
+
+```bash
+pip install opentelemetry-distro
+OTEL_TRACES_EXPORTER=auditry_otlp \
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318 \
+OTEL_LOGS_EXPORTER=none \
+opentelemetry-instrument uvicorn app:app
+```
+
+`auditry_otlp` is OTLP over HTTP, configured by the usual `OTEL_EXPORTER_OTLP_*`
+variables. `auditry_console` prints scrubbed spans to stdout for local
+development. Zero-code setup already instruments FastAPI, so leave
+`instrument_server` off there (auditry also detects an instrumented app and
+does not add a second server span). Those spans follow the instrumentor's own
+settings rather than `TracingConfig` and `excluded_paths`: set
+`OTEL_PYTHON_FASTAPI_EXCLUDED_URLS` to keep health probes out. Scrubbing and
+the `correlation_id` attribute apply either way.
+
+**Server spans.** `tracing.instrument_server=True` starts one server span per
+request, without per-`receive`/`send` child spans, so a streaming response is
+one span:
+
+- FastAPI: `FastAPIInstrumentor`, named `GET /files/{name}` by route template.
+- Quart: there is no official Quart instrumentation, so auditry wraps the app in
+  OpenTelemetry's ASGI middleware (outermost) and renames each span to its
+  route rule, `GET /files/<name>`.
+
+Paths in `excluded_paths` get no span, and still get the request-ID header.
+
+### TracingConfig
+
+| Field | Default | Effect |
+|---|---|---|
+| `instrument_server` | `False` | Start a server span per request (see above). Leave off when the service instruments itself. |
+| `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern. |
+| `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
+| `keep_client_address` | `False` | Keep the client IP address and port on server spans. |
+
+`additional_redaction_patterns` applies to spans too: to query parameter names
+and captured header names.
+
+### correlation_id vs trace_id
+
+| | `correlation_id` | `trace_id` |
+|---|---|---|
+| Identifies | One request chain, as a single flat ID | One trace: a tree of timed spans. `span_id` on a log line says which operation wrote it. |
+| Created by | `asgi-correlation-id`, when the inbound header is missing or not a valid UUID4 | The OTel SDK, when there is no valid inbound `traceparent` |
+| Randomness | `uuid4()`, from `os.urandom` | `random.getrandbits(128)`, not cryptographic. Never use it as a secret. |
+| Format | 32 hex characters | 32 hex characters. They look identical, so never put one in the other's field. |
+| Header | `X-Request-ID` (configurable) | `traceparent: 00-<trace_id>-<parent span_id>-<flags>`, plus `tracestate` |
+| Returned to the client | Yes, in the response header | No |
+| Inbound trust | Any caller's valid UUID4 is accepted | Any caller's `traceparent` is accepted, and its sampled flag forces sampling under the default sampler |
+| Present when | A middleware or propagation helper bound it | An SDK and instrumentation are installed. Unsampled requests still log a `trace_id`, but the backend has no trace for it. |
+| Used for | Searching logs, support tickets | Opening the latency tree in the trace backend |
+
+### SQS and SNS
+
+```python
+from auditry import bound_message_context, sqs_message_attributes
+
+# Producer, inside a span: correlation_id plus traceparent/tracestate
+sqs.send_message(
+    QueueUrl=queue_url,
+    MessageBody=json.dumps(job),
+    MessageAttributes=sqs_message_attributes(),
+)
+
+# Consumer: binds the message's correlation ID and attaches its trace context
+# for the block, then restores both
+for message in response.get("Messages", []):
+    with bound_message_context(message):
+        logger.info("processing")   # carries the producer's trace_id
+```
+
+Both boto3 records (`MessageAttributes` / `StringValue`) and Lambda event
+records (`messageAttributes` / `stringValue`) are read. `extract_trace_context(message)`
+returns the context without attaching it. `bind_from_sqs_message()` attaches it
+too, and like its correlation binding, that is sticky.
+
+SQS allows 10 message attributes. When the trace attributes would push a message
+past that, they are skipped with one warning per process (the correlation ID is
+still added); in strict mode `MessageAttributeLimitError` is raised. Attributes
+you pass in `existing` are never overwritten.
+
+### What Gets Scrubbed
+
+Traces are a general-access destination. Only system-generated operational
+values (timings, status codes, route templates, random IDs, error types)
+survive. The exporter applies these rules to span, event and link attributes;
+resource attributes are not touched.
+
+| Rule | What happens |
+|---|---|
+| Exception events | `exception.message` and `exception.stacktrace` are removed; `exception.type` and `exception.escaped` stay. |
+| Status description | Replaced by the exception type of the first exception event, or removed. The status code stays. |
+| User identity | Every `enduser.*` and `user.*` attribute is removed (`user_agent.*` stays). |
+| Database statements | Per `db_statement` (literals become `?` by default). `db.query.parameter.*` is always removed. |
+| GenAI content | Prompts, completions, input/output messages, system instructions, tool call arguments and results, tool definitions, retrieval query text and documents, and evaluation explanations are removed, as are `gen_ai.*` events. Model, usage, finish-reason and operation attributes stay. |
+| Query strings | In `url.full`, `http.url`, `url.query` and `http.target`, every value not in `query_param_allowlist` becomes `[REDACTED]`; names stay. A query that does not parse (for example `?q3-deck.pdf`) is redacted whole. Full URLs also lose `user:password@` and any `#fragment`, and `url.fragment` is removed. |
+| Server paths | On server spans with a route, the path in `url.path`, `http.target`, `url.full` and `http.url` becomes the route template. |
+| Client address | On server spans, `client.address`, `net.peer.ip` and the other client address and port attributes are removed, unless `keep_client_address` is set. |
+| Captured headers | `http.request.header.*` / `http.response.header.*` values whose name matches a redaction pattern become `("[REDACTED]",)`. |
+| Span names | Server spans are named `METHOD route`, or just `METHOD` without a route. Any name is cut at `?`. |
+| Email addresses | Any email address (including `%40`-encoded) left in a value or a span name becomes `[REDACTED]`. |
+
+Scrubbing fails closed: a span whose scrubbing raises is dropped, never exported
+unscrubbed, and the rest of the batch is exported. One warning per exception
+type per exporter goes to the `auditry.otel` logger, without attribute values.
+In strict mode the error is raised instead.
+
+Exception detail still reaches the handler registered with `set_trace_handler`.
+With `trace_id` on the error log line, a span can be matched to its traceback
+there.
+
+### Operator Guidance
+
+- Use `BatchSpanProcessor`, so scrubbing runs on the export thread rather than
+  the request thread.
+- Set `OTEL_LOGS_EXPORTER=none`, and never set
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`: GenAI prompt and
+  response content goes out through the OpenTelemetry Logs API, which the span
+  exporter never sees.
+- Don't enable the `process` resource detector; it records command-line
+  arguments.
+- Header capture (`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*`) is opt-in;
+  sensitive header values are still redacted when it is on.
+- On public endpoints, an inbound `traceparent` with the sampled flag forces
+  sampling under the default sampler. Consider a rate-limited sampler there.
+
+### Limitations
+
+- **Method-specific exclusions.** OpenTelemetry matches excluded URLs without
+  the method, so only the `"*"` key of a dict-form `excluded_paths` applies to
+  spans. Paths excluded for one method only still get spans.
+- **Unrouted requests** (404s, raw ASGI apps) have no route template, so their
+  spans keep the raw path, with email addresses redacted.
+- **Exception detail** is available only through `set_trace_handler`, never on
+  spans.
+- **Scrubbing covers only spans exported through auditry's exporters.** A
+  second span processor with a plain exporter, or anything sent through the
+  OpenTelemetry Logs API, is not scrubbed.
 
 ## Metrics (CloudWatch EMF)
 
@@ -344,10 +584,17 @@ pipeline as every other line — so alongside the EMF payload it carries the roo
 schema (`timestamp`, `service`, `version`, `environment`) **and the
 `correlation_id`** of the request that produced it. CloudWatch ignores the extra
 keys when extracting the metric; you get to tie a latency spike back to the
-exact request in Logs Insights. The metrics logger's level is pinned to INFO, so
+exact request in Logs Insights. Inside an OpenTelemetry span, the record also
+carries `trace_id` and `span_id`. The metrics logger's level is pinned to INFO, so
 a `WARNING` root level can't silently discard metrics. If logging was never
 configured (a script, a bare test), records fall back to a raw single-line write
 on stdout — EMF extraction never depends on logging setup.
+
+Because metric and dimension values share one flat JSON object with the log
+fields, a metric or dimension may not be named after one: `_aws`, `event`,
+`exc_info`, `message`, `level`, `timestamp`, `service`, `version`,
+`environment`, `correlation_id`, `trace_id` or `span_id`. Such a record is
+dropped with a warning (`MetricRecordError` in strict mode).
 
 ### Timing Dependency Calls
 
@@ -623,6 +870,8 @@ All logs are structured JSON, ready for log aggregators:
   "level": "INFO",
   "service": "my-service-name",
   "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
   "message": "Request completed: POST /workflows - Status: 201 - Duration: 45.23ms",
   "request": {
     "method": "POST",
@@ -639,6 +888,10 @@ All logs are structured JSON, ready for log aggregators:
   }
 }
 ```
+
+`correlation_id`, `trace_id` and `span_id` are optional fields: `correlation_id`
+appears whenever a context is bound, and `trace_id` / `span_id` only inside a
+valid OpenTelemetry span context.
 
 ## Sensitive Data Handling
 
@@ -1074,7 +1327,8 @@ is marked ready for review:
 
 Both install with `uv sync --all-extras --locked`, which fails if `uv.lock` has
 drifted from `pyproject.toml` — so re-lock with `uv lock` whenever you change a
-dependency.
+dependency. `Tests` runs once per supported Python (3.11 and 3.12), as
+`pytest (3.11)` and `pytest (3.12)`.
 
 ## License
 

@@ -27,8 +27,9 @@ Conventions enforced here:
 - metric records ride the same log pipeline as everything else: when
   ``configure_logging()`` has run, each record carries the root schema
   (``timestamp``, ``service``, ``version``, ``environment``,
-  ``correlation_id``) alongside the EMF payload, so a metric can be tied
-  back to the request that produced it. CloudWatch ignores the extra keys.
+  ``correlation_id``, and ``trace_id`` / ``span_id`` inside a span) alongside
+  the EMF payload, so a metric can be tied back to the request that produced
+  it. CloudWatch ignores the extra keys.
 
 Usage:
 
@@ -56,6 +57,7 @@ import structlog
 
 from .errors import DimensionLimitError, ForbiddenDimensionError, MetricRecordError
 from .logging_config import is_strict
+from .tracing import TRACE_LOG_FIELDS
 
 __all__ = ["MetricsLogger", "ForbiddenDimensionError", "DimensionLimitError", "MetricRecordError"]
 
@@ -119,6 +121,7 @@ _RESERVED_RECORD_KEYS = frozenset(
         "version",
         "environment",
         "correlation_id",
+        *TRACE_LOG_FIELDS,
     }
 )
 

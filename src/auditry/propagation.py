@@ -10,8 +10,12 @@ helpers here so the ID survives every boundary:
   the ``bound_correlation_id()`` context manager around each unit of work,
   BEFORE its first log line. ``bind_correlation_id()`` is the sticky form for
   a true edge (a script, a one-shot process).
-- SQS/SNS: ``sqs_message_attributes()`` on send, ``bind_from_sqs_message()``
-  on receive.
+- SQS/SNS: ``sqs_message_attributes()`` on send; ``bound_message_context()``
+  around each received message, or ``bind_from_sqs_message()`` at a true edge.
+
+With the ``otel`` extra installed, the HTTP and SQS/SNS helpers also carry the
+W3C trace context (``traceparent``/``tracestate``), so a trace continues
+across the same boundaries.
 
 IDs are always random UUID4s — opaque, never derived from user data — and
 services propagate an inbound ID rather than generating a fresh one
@@ -21,11 +25,23 @@ mid-chain, so one ID follows a request across every service.
 import functools
 import inspect
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from asgi_correlation_id import correlation_id
+
+from .errors import MessageAttributeLimitError
+from .tracing import (
+    attach_context,
+    context_from_carrier,
+    detach_context,
+    drop_or_raise,
+    inject_trace_context,
+)
+
+if TYPE_CHECKING:
+    from opentelemetry.context import Context
 
 __all__ = [
     "bind_correlation_id",
@@ -34,12 +50,21 @@ __all__ = [
     "outbound_headers",
     "sqs_message_attributes",
     "extract_correlation_id",
+    "extract_trace_context",
     "bind_from_sqs_message",
+    "bound_message_context",
     "with_correlation",
 ]
 
 DEFAULT_HEADER = "X-Request-ID"
 SQS_ATTRIBUTE_NAME = "correlation_id"
+
+# W3C Trace Context fields, used verbatim as header and message-attribute
+# names (the same names OTel's botocore/boto3sqs instrumentations use).
+TRACE_CONTEXT_FIELDS = ("traceparent", "tracestate")
+
+# The SQS per-message attribute quota.
+SQS_MAX_MESSAGE_ATTRIBUTES = 10
 
 # The header name from ObservabilityConfig.correlation_id_header, seeded by
 # create_middleware(), so outbound calls use the same name the service
@@ -139,9 +164,18 @@ def outbound_headers(
 
     Also attach these to third-party API calls where the SDK allows custom
     headers/metadata, so vendor-side audit trails line up with your logs.
+
+    Inside a valid span (``otel`` extra installed), also carries
+    ``traceparent`` and, when non-empty, ``tracestate``, so the downstream
+    service continues the trace. ``baggage`` is never sent. A trace header
+    already in ``extra`` (any letter case) is kept as given.
     """
     headers = dict(extra) if extra else {}
     headers[header_name or correlation_header_name()] = ensure_correlation_id()
+    present = {name.lower() for name in headers}
+    for name, value in _trace_carrier().items():
+        if name not in present:
+            headers[name] = value
     return headers
 
 
@@ -158,22 +192,93 @@ def sqs_message_attributes(
         MessageAttributes=sqs_message_attributes(),
     )
     ```
+
+    Inside a valid span (``otel`` extra installed), also carries the
+    ``traceparent`` and ``tracestate`` attributes, unless that would exceed
+    the SQS limit of 10 attributes per message: then the trace attributes
+    are skipped with one warning per process (``MessageAttributeLimitError``
+    in strict mode). Attributes already in ``existing`` are never overwritten
+    by trace context.
     """
     attrs = dict(existing) if existing else {}
-    attrs[SQS_ATTRIBUTE_NAME] = {
-        "DataType": "String",
-        "StringValue": ensure_correlation_id(),
-    }
+    attrs[SQS_ATTRIBUTE_NAME] = _string_attribute(ensure_correlation_id())
+    trace_fields = {name: value for name, value in _trace_carrier().items() if name not in attrs}
+    if len(attrs) + len(trace_fields) > SQS_MAX_MESSAGE_ATTRIBUTES:
+        drop_or_raise(
+            "sqs_message_attributes",
+            MessageAttributeLimitError(
+                f"{len(attrs)} message attributes plus {len(trace_fields)} for trace "
+                f"context exceeds the SQS limit of {SQS_MAX_MESSAGE_ATTRIBUTES}"
+            ),
+        )
+        return attrs
+    for name, value in trace_fields.items():
+        attrs[name] = _string_attribute(value)
     return attrs
+
+
+def _string_attribute(value: str) -> dict[str, str]:
+    return {"DataType": "String", "StringValue": value}
+
+
+def _trace_carrier() -> dict[str, str]:
+    """The current span's W3C trace context; empty outside a valid span."""
+    carrier: dict[str, str] = {}
+    inject_trace_context(carrier)
+    return carrier
+
+
+def _message_attribute(message: Mapping[str, Any], name: str) -> str | None:
+    """A string attribute of a received message: ``MessageAttributes`` /
+    ``StringValue`` from a boto3 receive, or ``messageAttributes`` /
+    ``stringValue`` from a Lambda event record."""
+    attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
+    attr = attrs.get(name) or {}
+    return attr.get("StringValue") or attr.get("stringValue")
 
 
 def extract_correlation_id(message: dict[str, Any]) -> str | None:
     """The correlation ID carried by a received SQS/SNS message, or ``None``.
     Binds nothing — pair it with ``bound_correlation_id()`` in a consumer loop.
     """
-    attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
-    attr = attrs.get(SQS_ATTRIBUTE_NAME) or {}
-    return attr.get("StringValue") or attr.get("stringValue")
+    return _message_attribute(message, SQS_ATTRIBUTE_NAME)
+
+
+def extract_trace_context(message: dict[str, Any]) -> "Context | None":
+    """The trace context carried by a received SQS/SNS message's
+    ``traceparent`` / ``tracestate`` attributes, or ``None`` when it carries no
+    valid one (or the ``otel`` extra is not installed). Attaches nothing; see
+    ``bound_message_context()``."""
+    carrier = {}
+    for name in TRACE_CONTEXT_FIELDS:
+        value = _message_attribute(message, name)
+        if value:
+            carrier[name] = value
+    return context_from_carrier(carrier) if carrier else None
+
+
+@contextmanager
+def bound_message_context(message: dict[str, Any]) -> Iterator[str]:
+    """
+    Bind a received SQS/SNS message's correlation ID and attach its trace
+    context for the duration of a block, then restore both.
+
+    ```python
+    for message in response.get("Messages", []):
+        with bound_message_context(message):
+            logger.info("processing")   # this message's correlation_id and trace_id
+    ```
+
+    A message without a correlation ID gets a fresh random one. A message
+    without a valid trace context leaves the current one in place. Yields the
+    bound correlation ID.
+    """
+    with bound_correlation_id(extract_correlation_id(message)) as cid:
+        token = attach_context(extract_trace_context(message))
+        try:
+            yield cid
+        finally:
+            detach_context(token)
 
 
 def bind_from_sqs_message(message: dict[str, Any]) -> str:
@@ -182,11 +287,14 @@ def bind_from_sqs_message(message: dict[str, Any]) -> str:
     call this BEFORE the consumer's first log line.
 
     Falls back to a fresh random ID if the attribute is absent, so a log
-    line is never emitted without one. The binding is sticky (see
+    line is never emitted without one. Also attaches the message's trace
+    context, when it carries a valid one. Both bindings are sticky (see
     ``bind_correlation_id``); in a long-lived consumer, wrap each message in
-    ``bound_correlation_id(...)`` with the extracted value instead.
+    ``bound_message_context(message)`` instead.
     """
-    return bind_correlation_id(extract_correlation_id(message))
+    cid = bind_correlation_id(extract_correlation_id(message))
+    attach_context(extract_trace_context(message))
+    return cid
 
 
 def with_correlation(func: F) -> F:

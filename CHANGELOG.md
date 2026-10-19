@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.6.0 (2026-10-19)
+
+Optional OpenTelemetry tracing: trace IDs on log lines, W3C trace context
+across HTTP and SQS/SNS hops, a span exporter that scrubs sensitive data, and
+opt-in server spans. Everything new sits behind the `otel` extra;
+`pip install auditry` still pulls in no OpenTelemetry.
+
+### Breaking
+
+- **Python 3.11 or later.** OpenTelemetry 1.42.0 and later require Python
+  3.10+, and every internal consumer runs 3.11 or 3.12. Services on 3.9 or 3.10
+  stay on 0.5.x.
+- **`trace_id` and `span_id` are reserved in `MetricsLogger`.** A metric or
+  dimension with either name is dropped with a warning (`MetricRecordError` in
+  strict mode), because inside a span the log pipeline writes those fields.
+
+### Added
+
+- The `otel` extra: `pip install auditry[otel]` (also in `all`).
+- `trace_id` / `span_id` on every log line written inside a valid span context,
+  including foreign stdlib records and EMF metric records. Optional fields:
+  absent outside a span and without the extra.
+- W3C trace context propagation. `outbound_headers()` adds `traceparent` /
+  `tracestate` inside a span (a trace header already in `extra` is kept);
+  `sqs_message_attributes()` adds them as message attributes within the SQS
+  limit of 10, warning once (`MessageAttributeLimitError` in strict mode) when
+  they do not fit. W3C Trace Context only, whatever `OTEL_PROPAGATORS` says;
+  `baggage` is never sent.
+- `bound_message_context(message)`: binds a received message's correlation ID
+  and attaches its trace context for a block, then restores both.
+  `extract_trace_context(message)` returns the context without attaching it.
+  `bind_from_sqs_message()` now also attaches the trace context (sticky).
+- `correlation_id` recorded as an attribute on the current server span, from
+  auditry's own server instrumentation or the service's.
+- `auditry.otel.ScrubbingSpanExporter`, which removes credentials, PII,
+  customer content, exception messages and stack traces from every span before
+  handing it to the wrapped exporter, and drops a span rather than export it
+  unscrubbed. `ScrubbingOTLPSpanExporter` and `ScrubbingConsoleSpanExporter`
+  are registered as the `opentelemetry_traces_exporter` entry points
+  `auditry_otlp` and `auditry_console`, for zero-code setup.
+- `TracingConfig` (`ObservabilityConfig.tracing`): `instrument_server`,
+  `query_param_allowlist`, `db_statement` and `keep_client_address`.
+- Opt-in server spans (`tracing.instrument_server=True`) for FastAPI
+  (`FastAPIInstrumentor`) and Quart (OpenTelemetry's ASGI middleware, spans
+  renamed to the route rule), skipping `excluded_paths`. An app that is already
+  instrumented is left alone.
+- CI runs the test suite on Python 3.11 and 3.12. The check names become
+  `pytest (3.11)` and `pytest (3.12)`.
+
+### Fixed
+
+- **Quart: HTTP errors keep their status.** auditry's Quart error handler
+  re-raised every exception, so a 404, an `abort(403)` or any other HTTP error
+  left the app without a response and the server sent a 500, and the app's own
+  `errorhandler(500)` never ran. Unhandled exceptions are now logged from
+  Quart's `got_request_exception` signal instead, and Quart builds the response
+  as it would without auditry. What changes in the logs: an HTTP error is a
+  `Request completed` line with its real status rather than two
+  `Request failed` lines, and an unhandled exception is one `Request failed`
+  line rather than two. Log-derived error counts drop; check alarms on them.
+- `auditry.__version__` reported 0.4.0 in the 0.5.0 release; it now matches the
+  package version.
+
 ## 0.5.0 (2026-09-30)
 
 The 0.4.0 wheel on PyPI was built before the full 0.4.0 changes merged, so two

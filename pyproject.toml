@@ -1,7 +1,7 @@
 [project]
 name = "auditry"
-version = "0.5.0"
-description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, and sensitive data redaction"
+version = "0.6.0"
+description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, sensitive data redaction, and OpenTelemetry tracing"
 authors = [
     {name = "Ilana Zane", email = "ilana@farsight-ai.com"},
     {name = "Colin Stark"} 
@@ -9,7 +9,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction"]
+keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction", "opentelemetry", "tracing"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -36,10 +36,22 @@ fastapi = [
 quart = [
     "quart>=0.18.0",
 ]
+otel = [
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
+    "opentelemetry-instrumentation-asgi>=0.66b1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
+]
 all = [
     "fastapi>=0.100.0",
     "starlette>=0.27.0",
     "quart>=0.18.0",
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
+    "opentelemetry-instrumentation-asgi>=0.66b1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -64,12 +76,18 @@ Homepage = "https://github.com/farsight-ai/auditry"
 Repository = "https://github.com/farsight-ai/auditry"
 Issues = "https://github.com/farsight-ai/auditry/issues"
 
+# OTEL_TRACES_EXPORTER=auditry_otlp (or auditry_console) selects these in
+# zero-code setup; the SDK constructs them with no arguments.
+[project.entry-points.opentelemetry_traces_exporter]
+auditry_otlp = "auditry.otel.exporter:ScrubbingOTLPSpanExporter"
+auditry_console = "auditry.otel.exporter:ScrubbingConsoleSpanExporter"
+
 [build-system]
 requires = ["setuptools>=61.0,<70.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.quart"]
+packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.otel", "auditry.quart"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]

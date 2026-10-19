@@ -11,6 +11,8 @@ from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
+from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
+from ..tracing import require_otel, set_span_correlation_id
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
 
 
@@ -28,6 +30,8 @@ class FastAPIMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+
+        set_span_correlation_id(get_correlation_id())
 
         # Create request to check path
         request = Request(scope, receive=receive)
@@ -159,10 +163,22 @@ class FastAPIMiddleware:
 
 
 def create_middleware(app, config: ObservabilityConfig):
-    """Create and attach observability middleware to FastAPI app."""
+    """Create and attach observability middleware to FastAPI app.
+
+    With ``config.tracing.instrument_server``, also starts an OpenTelemetry
+    server span per request (requires the ``otel`` extra).
+    """
     _set_config_service(config.service_name)
+    set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)
+    if config.tracing.instrument_server:
+        require_otel("tracing.instrument_server", "opentelemetry.instrumentation.fastapi")
+        from .tracing import instrument_fastapi
+
+        # The instrumentor wraps the whole middleware stack when it is built,
+        # so its span is active in both middlewares whatever the call order.
+        instrument_fastapi(app, config)
     return app

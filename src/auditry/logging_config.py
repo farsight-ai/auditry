@@ -21,6 +21,7 @@ This module provides JSON-formatted logging with production-safe defaults:
   in the process.
 - The correlation ID is attached to every log line automatically (from the
   ASGI middleware context or a worker binding — see ``auditry.propagation``).
+  Inside an active OpenTelemetry span, so are ``trace_id`` and ``span_id``.
 - Instrumentation never fails the unit of work it measures. In production a
   bad metric dimension or a broken trace handler degrades to "drop and
   warn". In a *known* non-production environment the same failures raise
@@ -37,6 +38,8 @@ from typing import Any
 
 import structlog
 from asgi_correlation_id import correlation_id
+
+from .tracing import current_trace_fields, drop_or_raise
 
 # ---------------------------------------------------------------------------
 # Service context — service/version/environment stamped on every log line, so
@@ -188,6 +191,22 @@ def _add_correlation_id(
     return event_dict
 
 
+def _add_trace_context(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """``trace_id`` / ``span_id`` on every line written inside a valid span
+    context. Optional fields, like ``correlation_id``: absent outside a span
+    and when OpenTelemetry is not installed. Explicit fields win."""
+    try:
+        fields = current_trace_fields()
+    except Exception as exc:
+        drop_or_raise("trace_log_fields", exc)
+        return event_dict
+    for key, value in fields.items():
+        event_dict.setdefault(key, value)
+    return event_dict
+
+
 def _error_type_only(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
@@ -307,6 +326,8 @@ def configure_logging(
         _add_service_context,
         # correlation ID on every line (when a context is bound)
         _add_correlation_id,
+        # trace_id / span_id (inside an active span)
+        _add_trace_context,
         # "message" is the schema key — renamed BEFORE the exception
         # processors so the trace handler's event_dict snapshot matches the
         # documented schema

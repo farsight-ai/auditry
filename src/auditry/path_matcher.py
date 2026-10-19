@@ -1,6 +1,7 @@
 """Path matching utilities for middleware exclusions."""
 
 import fnmatch
+import re
 
 
 def should_exclude_path(
@@ -68,3 +69,40 @@ def _match_path_patterns(path: str, patterns: list[str]) -> bool:
             return True
 
     return False
+
+
+def excluded_paths_to_url_patterns(
+    excluded_paths: list[str] | dict[str, list[str]] | None,
+) -> list[str]:
+    """
+    Translate ``excluded_paths`` into OpenTelemetry ``excluded_urls`` regexes,
+    so server spans skip the same paths request logging skips.
+
+    OpenTelemetry matches each regex with ``re.search`` against
+    ``scheme://host`` plus the path, with no query and no method. The dict
+    form therefore contributes only its ``"*"`` key: method-specific
+    exclusions cannot be expressed, and those requests still get spans.
+
+    Raises ValueError for a pattern containing ``,``, because
+    ``FastAPIInstrumentor`` takes ``excluded_urls`` as a comma-separated string.
+    """
+    if excluded_paths is None:
+        return []
+    patterns = excluded_paths if isinstance(excluded_paths, list) else excluded_paths.get("*", [])
+    url_patterns = []
+    for pattern in patterns:
+        if "," in pattern:
+            raise ValueError(
+                f"excluded path {pattern!r} contains ',', which OpenTelemetry's "
+                "comma-separated excluded_urls cannot express"
+            )
+        # The same three ways _match_path_patterns matches.
+        alternatives = [re.escape(pattern) + "$"]
+        if "*" in pattern or "?" in pattern:
+            alternatives.append(fnmatch.translate(pattern))
+        if pattern.endswith("/"):
+            alternatives.append(re.escape(pattern))
+        # The host comes from the client's Host header; the lookahead pins the
+        # match to the first "/" after it, so no host can satisfy a pattern.
+        url_patterns.append("^[^:/]+://[^/]*(?=/)(?:" + "|".join(alternatives) + ")")
+    return url_patterns
