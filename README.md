@@ -393,8 +393,10 @@ spans (`span.set_attribute("app.note", question)` would pass), and name spans
 after operations, never data. Semantic-convention keys that hold only counts,
 sizes, or opaque IDs are kept even when their name matches a pattern
 (`gen_ai.usage.input_tokens`, `http.response_content_length`,
-`messaging.message.id`, ...). Add patterns with
-`additional_redaction_patterns=[...]`. A failing exporter drops the batch and
+`messaging.message.id`, ...). Source paths (`code.filepath`) are not: they
+can be absolute and name a user or directory. Add patterns with
+`additional_redaction_patterns=[...]`; they apply to every key, including the
+ones kept above. A failing exporter drops the batch and
 warns once per error type; in strict mode it raises.
 
 ### Outbound Call Spans

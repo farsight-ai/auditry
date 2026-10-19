@@ -100,7 +100,9 @@ _STATEMENT_ATTRIBUTES = frozenset({"db.statement"})
 
 # Semantic-convention keys that contain a sensitive substring but hold only
 # operational data: a host name ("address"), counts and sizes ("token",
-# "content", "message"), opaque IDs, and source locations ("filepath").
+# "content", "message"), and opaque IDs. Caller-supplied patterns still
+# apply to them. Source paths (code.filepath) are not listed: they can be
+# absolute and name a user or directory.
 _SAFE_ATTRIBUTES = frozenset(
     {
         "server.address",
@@ -114,8 +116,6 @@ _SAFE_ATTRIBUTES = frozenset(
         "messaging.message.body.size",
         "messaging.message.envelope.size",
         "messaging.batch.message_count",
-        "code.filepath",
-        "code.file.path",
     }
 )
 
@@ -143,7 +143,7 @@ class RedactingSpanExporter(SpanExporter):
     rather than in a span processor. What is removed depends on ``level``
     (see :class:`RedactionLevel`); the default, ``HIGH``, lets only
     OPERATIONAL data leave. ``additional_patterns`` apply at every level
-    except ``NONE``.
+    except ``NONE``, including to keys otherwise kept as operational.
 
     A failure while redacting or exporting drops the batch and logs one
     warning per error type; in strict mode it raises.
@@ -161,6 +161,7 @@ class RedactingSpanExporter(SpanExporter):
         if self._level >= RedactionLevel.MEDIUM:
             patterns += [*FORBIDDEN_DIMENSION_PATTERNS, *_TRACE_ONLY_PATTERNS]
         self._patterns = tuple(_normalize(p) for p in patterns)
+        self._custom_patterns = tuple(_normalize(p) for p in additional_patterns or ())
         self._warned: set[type[BaseException]] = set()
         if self._level is RedactionLevel.NONE:
             _logger.warning("span redaction is off; spans are exported as recorded")
@@ -233,7 +234,7 @@ class RedactingSpanExporter(SpanExporter):
                 value = self._redact_location(key, value, route)
                 if value is None:
                     continue
-            elif key not in _SAFE_ATTRIBUTES and self._is_sensitive(key):
+            elif self._is_sensitive(key):
                 continue
             scrubbed[key] = value
         return scrubbed
@@ -246,4 +247,8 @@ class RedactingSpanExporter(SpanExporter):
 
     def _is_sensitive(self, key: str) -> bool:
         normalized = _normalize(key)
+        if any(pattern in normalized for pattern in self._custom_patterns):
+            return True
+        if key in _SAFE_ATTRIBUTES:
+            return False
         return any(pattern in normalized for pattern in self._patterns)

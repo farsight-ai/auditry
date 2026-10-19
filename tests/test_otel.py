@@ -344,12 +344,29 @@ class TestSpansDoNotLeak:
             "gen_ai.usage.input_tokens": 12,
             "http.response_content_length": 512,
             "messaging.message.id": "m-1",
-            "code.filepath": "app/main.py",
         }
         with tracing.tracer.start_as_current_span("work") as span:
-            span.set_attributes({**operational, "db.statement": f"SELECT '{SECRET}'"})
+            span.set_attributes(
+                {
+                    **operational,
+                    "db.statement": f"SELECT '{SECRET}'",
+                    "code.filepath": f"/home/{SECRET}/app/main.py",
+                    "code.file.path": f"/home/{SECRET}/app/main.py",
+                }
+            )
         (exported,) = tracing.spans()
         assert dict(exported.attributes) == operational
+
+    def test_additional_patterns_override_operational_keys(self):
+        memory = InMemorySpanExporter()
+        provider = build_tracer_provider(
+            exporter=memory, additional_redaction_patterns=["message_id"]
+        )
+        with provider.get_tracer("test").start_as_current_span("work") as span:
+            span.set_attributes({"messaging.message.id": SECRET, "server.address": "h"})
+        provider.force_flush()
+        (exported,) = memory.get_finished_spans()
+        assert dict(exported.attributes) == {"server.address": "h"}
 
     def test_additional_patterns_are_applied(self):
         memory = InMemorySpanExporter()
