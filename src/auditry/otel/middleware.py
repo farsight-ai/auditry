@@ -20,7 +20,9 @@ def _method_only_span_details(scope: dict[str, Any]) -> tuple[str, dict[str, Any
 class TracingMiddleware:
     """
     Starts a server span per request through OpenTelemetry's ASGI middleware,
-    except for ``excluded_paths``, which pass straight through untraced.
+    except for ``excluded_paths``, which pass straight through untraced
+    (websocket paths too; with no method, only list and ``"*"`` patterns
+    match them).
 
     Must be the outermost middleware so the span is active while auditry
     writes its request log line. Header capture is never configured, and the
@@ -47,7 +49,7 @@ class TracingMiddleware:
         )
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and should_exclude_path(
+        if scope["type"] in ("http", "websocket") and should_exclude_path(
             scope.get("path", ""), scope.get("method", ""), self.excluded_paths
         ):
             await self.untraced_app(scope, receive, send)

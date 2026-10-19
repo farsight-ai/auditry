@@ -157,7 +157,12 @@ def outbound_headers(
     ``traceparent``/``tracestate`` replace any passed in ``extra``.
     """
     headers = dict(extra) if extra else {}
-    headers.update(trace_context())
+    active = trace_context()
+    if active:
+        # Header names are case-insensitive, and a tracestate from another
+        # trace must not ride along with this traceparent.
+        headers = {k: v for k, v in headers.items() if k.lower() not in TRACE_CONTEXT_FIELDS}
+        headers.update(active)
     headers[header_name or correlation_header_name()] = ensure_correlation_id()
     return headers
 

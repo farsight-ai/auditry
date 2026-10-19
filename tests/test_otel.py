@@ -7,7 +7,7 @@ import sys
 
 import pytest
 from asgi_correlation_id import correlation_id
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
@@ -306,6 +306,24 @@ class TestFastAPINativeTelemetry:
             return {"ok": True}
 
         TestClient(app).get("/health")
+        assert tracing.spans() == ()
+
+
+class TestWebsocketExclusion:
+    def test_excluded_websocket_path_is_not_traced(self, tracing):
+        app = FastAPI()
+        create_fastapi_middleware(
+            app, _config(excluded_paths=["/ws"]), tracer_provider=tracing.provider
+        )
+
+        @app.websocket("/ws")
+        async def ws(websocket: WebSocket):
+            await websocket.accept()
+            await websocket.send_text("hi")
+            await websocket.close()
+
+        with TestClient(app).websocket_connect("/ws") as connection:
+            assert connection.receive_text() == "hi"
         assert tracing.spans() == ()
 
 
@@ -701,6 +719,17 @@ class TestPropagation:
         trace_id = otel_trace.format_trace_id(span.get_span_context().trace_id)
         assert headers["traceparent"].split("-")[1] == trace_id
         assert "X-Request-ID" in headers
+
+    def test_active_trace_context_replaces_extra_in_any_case(self, tracing):
+        stale = {"Traceparent": TRACEPARENT, "TraceState": "k=v", "X-Other": "1"}
+        with tracing.tracer.start_as_current_span("call"):
+            headers = outbound_headers(extra=stale)
+        assert [k for k in headers if k.lower() in ("traceparent", "tracestate")] == ["traceparent"]
+        assert headers["traceparent"] != TRACEPARENT
+        assert headers["X-Other"] == "1"
+
+    def test_extra_trace_headers_pass_through_outside_a_span(self):
+        assert outbound_headers(extra={"Traceparent": TRACEPARENT})["Traceparent"] == TRACEPARENT
 
     def test_no_traceparent_outside_a_span(self):
         assert "traceparent" not in outbound_headers()
