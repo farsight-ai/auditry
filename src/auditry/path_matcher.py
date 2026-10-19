@@ -1,11 +1,10 @@
 """Path matching utilities for middleware exclusions."""
 
 import fnmatch
-from typing import Optional, Union
 
 
 def should_exclude_path(
-    path: str, method: str, excluded_paths: Optional[Union[list[str], dict[str, list[str]]]]
+    path: str, method: str, excluded_paths: list[str] | dict[str, list[str]] | None
 ) -> bool:
     """
     Check if a request path should be excluded from middleware processing.

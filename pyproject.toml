@@ -7,15 +7,13 @@ authors = [
     {name = "Colin Stark"} 
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Framework :: FastAPI",
@@ -80,7 +78,7 @@ auditry = ["py.typed"]
 [tool.ruff]
 line-length = 100
 # The oldest interpreter in requires-python: UP rewrites are only safe up to it.
-target-version = "py39"
+target-version = "py311"
 src = ["src"]
 exclude = [".venv", "venv", "__pycache__", "build", "dist"]
 # The formatter also rewrites Python code blocks inside Markdown. The README's
@@ -111,7 +109,7 @@ timeout = 30
 timeout_method = "thread"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

@@ -50,7 +50,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -202,8 +202,8 @@ def _dimension_problems(dimensions: dict[str, Any]) -> list[_Problem]:
 def _record_problems(
     dims: dict[str, Any],
     metrics: dict[str, float],
-    rollup_dimension_sets: Optional[list[list[str]]],
-    dimension_sets: Optional[list[list[str]]] = None,
+    rollup_dimension_sets: list[list[str]] | None,
+    dimension_sets: list[list[str]] | None = None,
 ) -> list[_Problem]:
     """Problems with the record as a whole, beyond the dimensions."""
     problems: list[_Problem] = []
@@ -241,7 +241,7 @@ def _record_problems(
 
 def _dimension_set_problems(
     dims: dict[str, Any],
-    rollup_dimension_sets: Optional[list[list[str]]],
+    rollup_dimension_sets: list[list[str]] | None,
     dimension_sets: list[list[str]],
 ) -> list[_Problem]:
     problems: list[_Problem] = []
@@ -326,10 +326,10 @@ class MetricsLogger:
     def __init__(
         self,
         namespace: str,
-        service: Optional[str] = None,
-        default_dimensions: Optional[dict[str, Any]] = None,
+        service: str | None = None,
+        default_dimensions: dict[str, Any] | None = None,
         sink: Any = None,
-        strict: Optional[bool] = None,
+        strict: bool | None = None,
     ):
         self.namespace = namespace
         self._strict = strict
@@ -358,10 +358,10 @@ class MetricsLogger:
         self,
         metrics: dict[str, float],
         unit: str = "Count",
-        dimensions: Optional[dict[str, Any]] = None,
-        units: Optional[dict[str, str]] = None,
-        rollup_dimension_sets: Optional[list[list[str]]] = None,
-        dimension_sets: Optional[list[list[str]]] = None,
+        dimensions: dict[str, Any] | None = None,
+        units: dict[str, str] | None = None,
+        rollup_dimension_sets: list[list[str]] | None = None,
+        dimension_sets: list[list[str]] | None = None,
     ) -> None:
         """
         Emit one EMF record carrying one or more metric values.
@@ -465,13 +465,11 @@ class MetricsLogger:
 
     # -- conveniences ---------------------------------------------------------
 
-    def count(
-        self, name: str, value: float = 1, dimensions: Optional[dict[str, Any]] = None
-    ) -> None:
+    def count(self, name: str, value: float = 1, dimensions: dict[str, Any] | None = None) -> None:
         """Counter. Use ``value=0`` to keep alarmable metrics alive."""
         self.emit({name: value}, unit="Count", dimensions=dimensions)
 
-    def zero(self, *names: str, dimensions: Optional[dict[str, Any]] = None) -> None:
+    def zero(self, *names: str, dimensions: dict[str, Any] | None = None) -> None:
         """Emit zero counts for rare conditions you alarm on — monitoring
         systems forget metrics that go silent, and zero counts enable
         "no data" alarms. No names, no record."""
@@ -480,7 +478,7 @@ class MetricsLogger:
         self.emit(dict.fromkeys(names, 0), unit="Count", dimensions=dimensions)
 
     def timing(
-        self, name: str, milliseconds: float, dimensions: Optional[dict[str, Any]] = None
+        self, name: str, milliseconds: float, dimensions: dict[str, Any] | None = None
     ) -> None:
         """Latency value in milliseconds."""
         self.emit({name: milliseconds}, unit="Milliseconds", dimensions=dimensions)
@@ -489,7 +487,7 @@ class MetricsLogger:
     def dependency_call(
         self,
         dependency: str,
-        resource: Optional[str] = None,
+        resource: str | None = None,
     ) -> Iterator[None]:
         """
         Time a dependency call and count success/error, with the error

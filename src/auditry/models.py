@@ -1,5 +1,4 @@
 import warnings
-from typing import Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -28,13 +27,13 @@ class BusinessEventConfig(BaseModel):
     event_type: str = Field(
         description="Business event type (e.g., 'folder.created', 'file.uploaded')"
     )
-    extract_from_request: Optional[list[str]] = Field(
+    extract_from_request: list[str] | None = Field(
         default=None, description="Field names to extract from request body for business context"
     )
-    extract_from_response: Optional[list[str]] = Field(
+    extract_from_response: list[str] | None = Field(
         default=None, description="Field names to extract from response body for business context"
     )
-    extract_from_path: Optional[list[str]] = Field(
+    extract_from_path: list[str] | None = Field(
         default=None,
         description="Path parameter names to extract (e.g., ['folder_id'] for /folders/{folder_id})",
     )
@@ -65,7 +64,7 @@ class ObservabilityConfig(BaseModel):
             raise ValueError("service_name cannot be empty or whitespace")
         return v.strip()
 
-    business_events: Optional[dict[str, BusinessEventConfig]] = Field(
+    business_events: dict[str, BusinessEventConfig] | None = Field(
         default=None,
         description="Map of endpoint patterns to business event configurations for analytics tracking",
     )
@@ -73,7 +72,7 @@ class ObservabilityConfig(BaseModel):
         default=10_240,
         description="Maximum size in bytes for logged request/response bodies (default 10KB)",
     )
-    additional_redaction_patterns: Optional[list[str]] = Field(
+    additional_redaction_patterns: list[str] | None = Field(
         default=None,
         description="Additional field name patterns to redact beyond defaults",
     )
@@ -120,7 +119,7 @@ class ObservabilityConfig(BaseModel):
             "opt out and manage exclusions entirely yourself."
         ),
     )
-    excluded_paths: Optional[Union[list[str], dict[str, list[str]]]] = Field(
+    excluded_paths: list[str] | dict[str, list[str]] | None = Field(
         default=None,
         description=(
             "Paths to exclude from observability middleware. "

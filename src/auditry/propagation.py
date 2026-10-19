@@ -21,9 +21,9 @@ mid-chain, so one ID follows a request across every service.
 import functools
 import inspect
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 from asgi_correlation_id import correlation_id
 
@@ -45,7 +45,7 @@ SQS_ATTRIBUTE_NAME = "correlation_id"
 # create_middleware(), so outbound calls use the same name the service
 # accepts inbound. DEFAULT_HEADER is the fallback for processes without
 # middleware (workers, scripts).
-_config_header: Optional[str] = None
+_config_header: str | None = None
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -56,7 +56,7 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def _set_correlation_header(name: Optional[str]) -> None:
+def _set_correlation_header(name: str | None) -> None:
     """Seed the outbound header name from ObservabilityConfig (called by
     create_middleware). ``None`` clears it (tests)."""
     global _config_header
@@ -69,7 +69,7 @@ def correlation_header_name() -> str:
     return _config_header or DEFAULT_HEADER
 
 
-def bind_correlation_id(value: Optional[str] = None) -> str:
+def bind_correlation_id(value: str | None = None) -> str:
     """
     Bind a correlation ID to the current execution context — and leave it
     bound.
@@ -92,7 +92,7 @@ def bind_correlation_id(value: Optional[str] = None) -> str:
 
 
 @contextmanager
-def bound_correlation_id(value: Optional[str] = None) -> Iterator[str]:
+def bound_correlation_id(value: str | None = None) -> Iterator[str]:
     """
     Bind a correlation ID for the duration of a block, then restore whatever
     was bound before.
@@ -122,8 +122,8 @@ def ensure_correlation_id() -> str:
 
 
 def outbound_headers(
-    header_name: Optional[str] = None,
-    extra: Optional[dict[str, str]] = None,
+    header_name: str | None = None,
+    extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """
     Headers for an outbound HTTP call, carrying the correlation ID.
@@ -146,7 +146,7 @@ def outbound_headers(
 
 
 def sqs_message_attributes(
-    existing: Optional[dict[str, dict[str, str]]] = None,
+    existing: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, dict[str, str]]:
     """
     SQS/SNS MessageAttributes carrying the correlation ID.
@@ -167,7 +167,7 @@ def sqs_message_attributes(
     return attrs
 
 
-def extract_correlation_id(message: dict[str, Any]) -> Optional[str]:
+def extract_correlation_id(message: dict[str, Any]) -> str | None:
     """The correlation ID carried by a received SQS/SNS message, or ``None``.
     Binds nothing — pair it with ``bound_correlation_id()`` in a consumer loop.
     """

@@ -9,7 +9,6 @@ This example demonstrates:
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from pydantic import BaseModel
 from quart import Quart, abort, jsonify, request
@@ -74,8 +73,8 @@ class UserCreate(BaseModel):
     name: str
     email: str
     password: str  # Will be redacted in logs
-    phone: Optional[str] = None  # Will be redacted due to custom pattern
-    ssn: Optional[str] = None  # Will be redacted due to custom pattern
+    phone: str | None = None  # Will be redacted due to custom pattern
+    ssn: str | None = None  # Will be redacted due to custom pattern
 
 
 class UserResponse(BaseModel):

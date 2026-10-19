@@ -31,9 +31,9 @@ This module provides JSON-formatted logging with production-safe defaults:
 import logging
 import os
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from types import TracebackType
-from typing import Any, Callable, Optional
+from typing import Any
 
 import structlog
 from asgi_correlation_id import correlation_id
@@ -45,7 +45,7 @@ from asgi_correlation_id import correlation_id
 
 _service_context: dict[str, str] = {}
 
-_config_service: Optional[str] = None
+_config_service: str | None = None
 
 # Resolved once by configure_logging(), not per record.
 _full_tracebacks: bool = False
@@ -86,7 +86,7 @@ _STRICT_ENV = "AUDITRY_STRICT"
 _strict: bool = False
 
 
-def is_non_production_environment(environment: Optional[str]) -> bool:
+def is_non_production_environment(environment: str | None) -> bool:
     """True only for a *known* non-production environment name; unknown or
     unset is treated as production."""
     if not environment:
@@ -108,7 +108,7 @@ def _set_strict(value: bool) -> None:
     _strict = value
 
 
-def _resolve_strict(explicit: Optional[bool], environment: Optional[str]) -> bool:
+def _resolve_strict(explicit: bool | None, environment: str | None) -> bool:
     if explicit is not None:
         return explicit
     flag = os.environ.get(_STRICT_ENV, "").strip().lower()
@@ -117,13 +117,13 @@ def _resolve_strict(explicit: Optional[bool], environment: Optional[str]) -> boo
     return is_non_production_environment(environment)
 
 
-ExcInfo = tuple[type[BaseException], BaseException, Optional[TracebackType]]
+ExcInfo = tuple[type[BaseException], BaseException, TracebackType | None]
 TraceHandler = Callable[[str, ExcInfo, dict[str, Any]], None]
 
-_trace_handler: Optional[TraceHandler] = None
+_trace_handler: TraceHandler | None = None
 
 
-def set_trace_handler(handler: Optional[TraceHandler]) -> None:
+def set_trace_handler(handler: TraceHandler | None) -> None:
     """Receive ``(error_type, exc_info, event_dict)`` for every exception auditry
     keeps off the standard stream. The handler must route to a gated
     destination and never write back to stdout. ``None`` removes it.
@@ -132,12 +132,12 @@ def set_trace_handler(handler: Optional[TraceHandler]) -> None:
     _trace_handler = handler
 
 
-def get_trace_handler() -> Optional[TraceHandler]:
+def get_trace_handler() -> TraceHandler | None:
     """Return the currently registered trace handler, if any."""
     return _trace_handler
 
 
-def _set_config_service(service_name: Optional[str]) -> None:
+def _set_config_service(service_name: str | None) -> None:
     global _config_service
     _config_service = service_name
 
@@ -251,10 +251,10 @@ def _rename_event_to_message(
 
 def configure_logging(
     level: str = "INFO",
-    service: Optional[str] = None,
-    version: Optional[str] = None,
-    environment: Optional[str] = None,
-    strict: Optional[bool] = None,
+    service: str | None = None,
+    version: str | None = None,
+    environment: str | None = None,
+    strict: bool | None = None,
 ) -> None:
     """
     Configure application-wide structured logging using structlog.

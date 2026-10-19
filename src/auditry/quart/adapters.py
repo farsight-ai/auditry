@@ -6,7 +6,6 @@ Quart request and response objects.
 """
 
 import json
-from typing import Optional
 
 from quart import Request, Response, g
 from quart.wrappers.response import IterableBody
@@ -44,7 +43,7 @@ class QuartRequestAdapter(BaseRequestAdapter):
             return dict(request.view_args)
         return {}
 
-    async def extract_body(self, request: Request) -> Optional[bytes]:
+    async def extract_body(self, request: Request) -> bytes | None:
         """
         Extract body from Quart request.
 
@@ -59,7 +58,7 @@ class QuartRequestAdapter(BaseRequestAdapter):
         except Exception:
             return None
 
-    async def extract_user_id(self, request: Request) -> Optional[str]:
+    async def extract_user_id(self, request: Request) -> str | None:
         """
         Extract user ID from Quart request.
 
@@ -130,7 +129,7 @@ class QuartResponseAdapter(BaseResponseAdapter):
 
         return {}
 
-    async def extract_body(self, response: Response) -> Optional[bytes]:
+    async def extract_body(self, response: Response) -> bytes | None:
         """
         Extract body from Quart response.
 
