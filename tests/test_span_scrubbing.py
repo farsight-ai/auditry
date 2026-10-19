@@ -341,6 +341,20 @@ class TestDatabaseStatements:
     def test_placeholders_and_identifiers_kept(self, statement, expected):
         assert sanitize_sql(statement) == (expected or statement)
 
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            r"SELECT 1 FROM t WHERE note = 'it\'s' AND ssn = 'secret'",
+            r"SELECT 'C:\' FROM t WHERE ssn = 'secret'",
+            "SELECT 1 FROM t WHERE ssn = 'unterminated",
+        ],
+    )
+    def test_ambiguous_literals_drop_the_statement(self, statement):
+        assert sanitize_sql(statement) is None
+        assert client({"db.statement": statement, "db.system": "mysql"}) == {"db.system": "mysql"}
+        keep = SpanScrubPolicy(db_statement="keep")
+        assert client({"db.statement": statement}, keep) == {"db.statement": statement}
+
     @pytest.mark.parametrize("key", ["db.statement", "db.query.text"])
     def test_modes(self, key):
         attributes = {key: self.STATEMENT, "db.query.parameter.0": "jane", "db.system": "pg"}

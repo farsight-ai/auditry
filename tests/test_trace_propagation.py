@@ -169,6 +169,15 @@ class TestSqsAttributeLimit:
             with pytest.raises(MessageAttributeLimitError):
                 sqs_message_attributes(self.nine_attributes())
 
+    def test_limit_applies_only_when_trace_attributes_are_added(self, log_lines):
+        """Outside a span there is no trace context, so ten existing
+        attributes plus correlation_id never trip the trace-context check."""
+        configure_logging(service="svc", strict=True)
+        existing = {f"attr{i}": {"DataType": "String", "StringValue": "v"} for i in range(10)}
+        attributes = sqs_message_attributes(existing)
+        assert set(attributes) == {*existing, "correlation_id"}
+        assert not [line for line in log_lines() if line.get("operation")]
+
     def test_eight_existing_attributes_fit(self, otel):
         existing = {f"attr{i}": {"DataType": "String", "StringValue": "v"} for i in range(8)}
         with otel.tracer.start_as_current_span("producer"):

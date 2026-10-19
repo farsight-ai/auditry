@@ -231,10 +231,19 @@ def scrub_target(target: str, policy: SpanScrubPolicy, route: str | None = None)
     return (route if route else path) + separator + scrub_query(query, policy)
 
 
-def sanitize_sql(statement: str) -> str:
+def sanitize_sql(statement: str) -> str | None:
     """``db_statement="sanitize"``: string and numeric literals become ``?``.
-    Placeholders and identifiers are kept."""
-    return _SQL_NUMERIC_LITERAL.sub("?", _SQL_STRING_LITERAL.sub("?", statement))
+    Placeholders and identifiers are kept.
+
+    Returns None when literal boundaries are ambiguous, so the statement is
+    dropped rather than exported with a literal shifted into plain text: a
+    backslash-escaped quote (an escape in some databases, an ordinary
+    character in others), or a quote still unpaired after sanitizing.
+    """
+    if "\\'" in statement:
+        return None
+    sanitized = _SQL_NUMERIC_LITERAL.sub("?", _SQL_STRING_LITERAL.sub("?", statement))
+    return None if "'" in sanitized else sanitized
 
 
 def _is_sensitive_header(name: str, policy: SpanScrubPolicy) -> bool:
@@ -263,10 +272,13 @@ def _scrub_db_statements(attributes: _Attributes, mode: str) -> None:
             del attributes[key]
         elif key in DB_STATEMENT_KEYS and mode != "keep":
             value = attributes[key]
-            if mode == "sanitize" and isinstance(value, str):
-                attributes[key] = sanitize_sql(value)
-            else:
+            sanitized = (
+                sanitize_sql(value) if mode == "sanitize" and isinstance(value, str) else None
+            )
+            if sanitized is None:
                 del attributes[key]
+            else:
+                attributes[key] = sanitized
 
 
 def _remove_genai_content(attributes: _Attributes) -> None:

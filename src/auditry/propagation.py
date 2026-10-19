@@ -203,7 +203,7 @@ def sqs_message_attributes(
     attrs = dict(existing) if existing else {}
     attrs[SQS_ATTRIBUTE_NAME] = _string_attribute(ensure_correlation_id())
     trace_fields = {name: value for name, value in _trace_carrier().items() if name not in attrs}
-    if len(attrs) + len(trace_fields) > SQS_MAX_MESSAGE_ATTRIBUTES:
+    if trace_fields and len(attrs) + len(trace_fields) > SQS_MAX_MESSAGE_ATTRIBUTES:
         drop_or_raise(
             "sqs_message_attributes",
             MessageAttributeLimitError(
