@@ -403,6 +403,47 @@ class TestGenAI:
         assert is_dropped_event(name) is dropped
 
 
+class TestLangfuse:
+    def test_content_removed_operational_kept(self):
+        operational = {
+            "langfuse.observation.type": "generation",
+            "langfuse.observation.level": "DEFAULT",
+            "langfuse.observation.model.name": "claude-opus-5-5",
+            "langfuse.observation.usage_details": '{"input": 12, "output": 34}',
+            "langfuse.observation.cost_details": '{"total": 0.01}',
+            "langfuse.observation.prompt.name": "summarize",
+            "langfuse.observation.prompt.version": 3,
+            "langfuse.observation.completion_start_time": '"2026-10-19T12:00:00Z"',
+            "langfuse.environment": "production",
+            "langfuse.release": "1.4.2",
+            "langfuse.version": "2",
+        }
+        content = {
+            "langfuse.observation.input": '{"prompt": "Summarize the Q3 board deck"}',
+            "langfuse.observation.output": "Revenue fell 12% in Q3",
+            "langfuse.observation.metadata.customer": '"Acme Corp"',
+            "langfuse.observation.metadata": '{"customer": "Acme Corp"}',
+            "langfuse.observation.status_message": "cannot open q3.pdf",
+            "langfuse.observation.model.parameters": '{"temperature": 0.2}',
+            "langfuse.trace.name": "summarize Acme board deck",
+            "langfuse.trace.tags": ("acme",),
+            "langfuse.trace.metadata.deal": '"Project Falcon"',
+            "langfuse.trace.input": "older SDKs put trace input here",
+            "langfuse.trace.output": "and trace output here",
+            "langfuse.experiment.description": "free text",
+            "langfuse.some.future.attribute": "unknown keys are removed too",
+        }
+        assert client({**operational, **content, "session.id": "s-1"}) == {
+            **operational,
+            "session.id": "s-1",
+        }
+
+    def test_langfuse_user_id_is_removed_as_identity(self):
+        assert client({"user.id": "u-1", "langfuse.observation.type": "span"}) == {
+            "langfuse.observation.type": "span"
+        }
+
+
 class TestKeepList:
     KEEP = {
         "http.route": "/files/{name}",

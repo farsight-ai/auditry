@@ -91,6 +91,27 @@ GENAI_CONTENT_KEYS = frozenset(
 GENAI_CONTENT_PREFIXES = ("gen_ai.prompt.", "gen_ai.completion.")
 GENAI_EVENT_PREFIX = "gen_ai."
 
+# The Langfuse SDK attaches its span processor to the global tracer provider,
+# so its spans reach this exporter too. Its langfuse.* attributes carry prompt
+# input, model output and free-form metadata. Only these operational ones
+# survive; every other langfuse.* key, including any a later SDK adds, is removed.
+LANGFUSE_PREFIX = "langfuse."
+LANGFUSE_OPERATIONAL_KEYS = frozenset(
+    {
+        "langfuse.observation.type",
+        "langfuse.observation.level",
+        "langfuse.observation.model.name",
+        "langfuse.observation.usage_details",
+        "langfuse.observation.cost_details",
+        "langfuse.observation.prompt.name",
+        "langfuse.observation.prompt.version",
+        "langfuse.observation.completion_start_time",
+        "langfuse.environment",
+        "langfuse.release",
+        "langfuse.version",
+    }
+)
+
 # Anchored at the start of a run of local-part characters, so each run is
 # tried once rather than from every position inside it.
 _EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -288,6 +309,13 @@ def _remove_genai_content(attributes: _Attributes) -> None:
             del attributes[key]
 
 
+def _remove_langfuse_content(attributes: _Attributes) -> None:
+    """Langfuse SDK attributes other than the operational ones."""
+    for key in list(attributes):
+        if key.startswith(LANGFUSE_PREFIX) and key not in LANGFUSE_OPERATIONAL_KEYS:
+            del attributes[key]
+
+
 def _scrub_urls(attributes: _Attributes, policy: SpanScrubPolicy, route: str | None) -> None:
     """Query strings in every URL key, fragments removed; with a ``route``,
     paths become it."""
@@ -330,6 +358,7 @@ def scrub_attributes(
     _remove_identity(scrubbed)
     _scrub_db_statements(scrubbed, policy.db_statement)
     _remove_genai_content(scrubbed)
+    _remove_langfuse_content(scrubbed)
     route = scrubbed.get("http.route") if is_server else None
     _scrub_urls(scrubbed, policy, route if isinstance(route, str) else None)
     if is_server and not policy.keep_client_address:

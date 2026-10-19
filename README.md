@@ -518,6 +518,7 @@ resource attributes are not touched.
 | Query strings | In `url.full`, `http.url`, `url.query` and `http.target`, every value not in `query_param_allowlist` becomes `[REDACTED]`; names stay. A query that does not parse (for example `?q3-deck.pdf`) is redacted whole. Full URLs also lose `user:password@` and any `#fragment`, and `url.fragment` is removed. |
 | Server paths | On server spans with a route, the path in `url.path`, `http.target`, `url.full` and `http.url` becomes the route template. |
 | Client address | On server spans, `client.address`, `net.peer.ip` and the other client address and port attributes are removed, unless `keep_client_address` is set. |
+| Langfuse | The Langfuse SDK attaches to the global tracer provider, so its spans reach auditry's exporter. Every `langfuse.*` attribute is removed except observation type and level, model name, usage and cost details, prompt name and version, completion start time, environment, release and version. Langfuse itself still receives the full spans. |
 | Captured headers | `http.request.header.*` / `http.response.header.*` values whose name matches a redaction pattern become `("[REDACTED]",)`. |
 | Span names | Server spans are named `METHOD route`, or just `METHOD` without a route. Any name is cut at `?`. |
 | Email addresses | Any email address (including `%40`-encoded) left in a value or a span name becomes `[REDACTED]`. |
@@ -545,6 +546,11 @@ there.
   sensitive header values are still redacted when it is on.
 - On public endpoints, an inbound `traceparent` with the sampled flag forces
   sampling under the default sampler. Consider a rate-limited sampler there.
+- With Langfuse, set up the tracer provider before constructing `Langfuse()`.
+  When Langfuse runs first, it registers its own global provider, a later
+  `trace.set_tracer_provider()` is ignored with only a warning, and auditry's
+  exporter never sees a span. `Langfuse(tracer_provider=...)` keeps Langfuse on
+  a provider of its own instead.
 
 ### Limitations
 
@@ -557,7 +563,10 @@ there.
   spans.
 - **Scrubbing covers only spans exported through auditry's exporters.** A
   second span processor with a plain exporter, or anything sent through the
-  OpenTelemetry Logs API, is not scrubbed.
+  OpenTelemetry Logs API, is not scrubbed. Vendor SDKs add such processors to
+  the global provider: Langfuse's (which by default sends only LLM spans, to
+  Langfuse) and, if you turn it on, Sentry's OTLP integration, which sends every
+  span to Sentry.
 
 ## Metrics (CloudWatch EMF)
 

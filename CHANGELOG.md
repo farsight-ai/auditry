@@ -37,7 +37,8 @@ opt-in server spans. Everything new sits behind the `otel` extra;
 - `auditry.otel.ScrubbingSpanExporter`, which removes credentials, PII,
   customer content, exception messages and stack traces from every span before
   handing it to the wrapped exporter, and drops a span rather than export it
-  unscrubbed. `ScrubbingOTLPSpanExporter` and `ScrubbingConsoleSpanExporter`
+  unscrubbed. Langfuse SDK spans, which reach it through the global tracer
+  provider, keep only operational `langfuse.*` attributes. `ScrubbingOTLPSpanExporter` and `ScrubbingConsoleSpanExporter`
   are registered as the `opentelemetry_traces_exporter` entry points
   `auditry_otlp` and `auditry_console`, for zero-code setup.
 - `TracingConfig` (`ObservabilityConfig.tracing`): `instrument_server`,
