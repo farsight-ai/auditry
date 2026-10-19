@@ -119,6 +119,8 @@ _RESERVED_RECORD_KEYS = frozenset(
         "version",
         "environment",
         "correlation_id",
+        "trace_id",
+        "span_id",
     }
 )
 

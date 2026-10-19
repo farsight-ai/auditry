@@ -3,8 +3,10 @@
 ## 0.6.0
 
 Optional OpenTelemetry tracing. Nothing changes for services that don't opt
-in: trace context is only propagated with the `otel` extra installed, not
-with the `opentelemetry-api` package that FastAPI pulls in. Core auditry still supports Python 3.9; the `otel` extra needs 3.10+,
+in (`build_tracer_provider` / `configure_tracing`, or `tracing=True`): with
+the SDK installed by another dependency (FastAPI, Langfuse) and its own
+tracer provider, auditry stamps no trace IDs, propagates no trace context,
+and adds no spans or attributes to that provider's traces. Core auditry still supports Python 3.9; the `otel` extra needs 3.10+,
 because current OpenTelemetry releases do. On 3.9 the extra installs nothing
 and `tracing=True` fails at startup.
 
@@ -18,9 +20,13 @@ and `tracing=True` fails at startup.
   tracer provider exporting over OTLP/HTTP through `RedactingSpanExporter`,
   which keeps spans OPERATIONAL-only: it removes exception messages and
   stack traces, status descriptions, full URLs and query strings, header
-  attributes, client address, user agent, and attributes matching the
-  redaction or forbidden-dimension patterns or `content`, drops SQL
-  statements, and replaces raw paths with the route template.
+  attributes, client address, user agent, `user.*`, GenAI payloads (system
+  instructions, tool call arguments and results, `input.value` /
+  `output.value`, `traceloop.entity.*`, Langfuse input/output), and
+  attributes matching the redaction or forbidden-dimension patterns or
+  `content`, drops SQL statements, and replaces raw paths with the route
+  template. `ObservabilityConfig.additional_redaction_patterns` apply to
+  spans too. Both functions take keyword arguments only.
   `configure_tracing` raises if a global tracer provider is already
   installed, rather than leaving spans on an unredacted one.
 - `trace_id` and `span_id` on every log line inside a span.
@@ -28,7 +34,13 @@ and `tracing=True` fails at startup.
   active, and `with_correlation` continues the inbound trace. The SQS
   helpers carry only the correlation ID, as before.
 - Worker spans: `@with_correlation` runs each job in a CONSUMER span, child
-  of the producer's span, named `process <function name>`.
+  of the producer's span, named `process <function name>`, from the global
+  provider or `@with_correlation(tracer_provider=...)`. The span records no
+  exception event, only ERROR status and `error.type`, so a provider that
+  does not redact never receives the message or stack trace.
+- On FastAPI 0.142+, which traces requests natively, `tracing=True` turns
+  FastAPI's own request tracing off, so a request is traced once.
+- `trace_id` and `span_id` are reserved metric and dimension names.
 - `trace_context()`: the active span's `traceparent`/`tracestate`, for job
   kwargs and other carriers.
 - `create_middleware(..., tracer_provider=...)` for both frameworks.

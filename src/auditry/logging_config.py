@@ -21,7 +21,7 @@ This module provides JSON-formatted logging with production-safe defaults:
   in the process.
 - The correlation ID is attached to every log line automatically (from the
   ASGI middleware context or a worker binding — see ``auditry.propagation``).
-  With the ``otel`` extra and an active span, ``trace_id`` and ``span_id``
+  With tracing enabled and an active span, ``trace_id`` and ``span_id``
   are attached too (see ``auditry.otel_context``).
 - Instrumentation never fails the unit of work it measures. In production a
   bad metric dimension or a broken trace handler degrades to "drop and
@@ -196,9 +196,9 @@ def _add_correlation_id(
 def _add_trace_context(
     logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    """Every log line inside a span carries its ``trace_id`` and ``span_id``,
-    so a line links to its trace. Absent outside a span, for the same reason
-    ``correlation_id`` is absent when unbound."""
+    """With tracing enabled, every log line inside a span carries its
+    ``trace_id`` and ``span_id``, so a line links to its trace. Absent outside
+    a span, for the same reason ``correlation_id`` is absent when unbound."""
     if "trace_id" not in event_dict:
         ids = current_trace_ids()
         if ids:
@@ -333,7 +333,7 @@ def configure_logging(
         _add_service_context,
         # correlation ID on every line (when a context is bound)
         _add_correlation_id,
-        # trace_id / span_id on every line inside a span (otel extra)
+        # trace_id / span_id on every line inside a span (tracing enabled)
         _add_trace_context,
         # "message" is the schema key — renamed BEFORE the exception
         # processors so the trace handler's event_dict snapshot matches the

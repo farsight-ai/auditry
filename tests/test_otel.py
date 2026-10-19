@@ -1,8 +1,8 @@
 """Tests for OpenTelemetry tracing: log correlation, server spans, span
 redaction, and trace-context propagation."""
 
+import importlib.util
 import json
-import logging
 import sys
 
 import pytest
@@ -10,6 +10,7 @@ from asgi_correlation_id import correlation_id
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from opentelemetry import trace as otel_trace
+from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -36,13 +37,17 @@ from auditry.otel import (
     configure_tracing,
 )
 from auditry.otel import tracing as auditry_tracing
-from auditry.otel_context import current_trace_ids
+from auditry.otel.middleware import TracingMiddleware
+from auditry.otel_context import annotate_server_span, current_trace_ids
 from auditry.quart import create_middleware as create_quart_middleware
 
 SECRET = "s3cr3t-customer-value"
 TRACE_ID = "0af7651916cd43dd8448eb211c80319c"
 PARENT_SPAN_ID = "b7ad6b7169203331"
 TRACEPARENT = f"00-{TRACE_ID}-{PARENT_SPAN_ID}-01"
+
+# FastAPI 0.142+ traces requests natively whenever a tracer provider is set.
+FASTAPI_NATIVE_TELEMETRY = importlib.util.find_spec("fastapi.telemetry") is not None
 
 
 class Tracing:
@@ -61,6 +66,27 @@ class Tracing:
         return [s for s in self.spans() if s.kind is otel_trace.SpanKind.SERVER]
 
 
+class ForeignTracing:
+    """A tracer provider auditry did not build (Langfuse, opentelemetry-instrument):
+    no redaction, and installing it does not opt the process in."""
+
+    def __init__(self) -> None:
+        self.memory = InMemorySpanExporter()
+        self.provider = TracerProvider()
+        self.provider.add_span_processor(SimpleSpanProcessor(self.memory))
+        self.tracer = self.provider.get_tracer("foreign")
+
+    def spans(self):
+        return self.memory.get_finished_spans()
+
+
+@pytest.fixture
+def foreign(monkeypatch):
+    f = ForeignTracing()
+    monkeypatch.setattr(otel_trace, "get_tracer_provider", lambda: f.provider)
+    return f
+
+
 @pytest.fixture
 def tracing():
     t = Tracing()
@@ -71,6 +97,7 @@ def tracing():
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
     monkeypatch.delenv(REDACTION_LEVEL_ENV, raising=False)
+    monkeypatch.setattr(auditry_otel_context, "_state", auditry_otel_context._TracingState())
     configure_logging(service="svc")
     _set_strict(False)
     token = correlation_id.set(None)
@@ -237,6 +264,51 @@ class TestFastAPISpans:
         assert tracing.spans() == ()
 
 
+class TestFastAPINativeTelemetry:
+    """FastAPI 0.142+ starts its own server span (and operation spans) for
+    every request. With auditry tracing on, a request is traced once."""
+
+    def test_tracing_middleware_exposes_the_otel_middleware_as_app(self):
+        assert isinstance(TracingMiddleware(FastAPI()).app, OpenTelemetryMiddleware)
+
+    @pytest.mark.skipif(not FASTAPI_NATIVE_TELEMETRY, reason="FastAPI < 0.142")
+    def test_native_telemetry_alone_traces_the_request(self, tracing):
+        app = FastAPI(telemetry={"tracer_provider": tracing.provider})
+
+        @app.get("/items/{item_id}")
+        async def get_item(item_id: str):
+            return {"item_id": item_id}
+
+        TestClient(app).get("/items/42")
+        assert len(tracing.server_spans()) == 1
+
+    @pytest.mark.skipif(not FASTAPI_NATIVE_TELEMETRY, reason="FastAPI < 0.142")
+    def test_auditry_tracing_turns_native_tracing_off(self, tracing):
+        app = FastAPI(telemetry={"tracer_provider": tracing.provider})
+        create_fastapi_middleware(app, _config(), tracer_provider=tracing.provider)
+
+        @app.get("/items/{item_id}")
+        async def get_item(item_id: str):
+            return {"item_id": item_id}
+
+        TestClient(app).get("/items/42")
+        (span,) = tracing.spans()
+        assert span.kind is otel_trace.SpanKind.SERVER
+        assert span.name == "GET /items/{item_id}"
+
+    @pytest.mark.skipif(not FASTAPI_NATIVE_TELEMETRY, reason="FastAPI < 0.142")
+    def test_excluded_path_is_not_traced_natively_either(self, tracing):
+        app = FastAPI(telemetry={"tracer_provider": tracing.provider})
+        create_fastapi_middleware(app, _config(), tracer_provider=tracing.provider)
+
+        @app.get("/health")
+        async def health():
+            return {"ok": True}
+
+        TestClient(app).get("/health")
+        assert tracing.spans() == ()
+
+
 class TestQuartSpans:
     @pytest.mark.asyncio
     async def test_span_named_by_route_template_with_correlation_id(self, tracing):
@@ -257,6 +329,36 @@ class TestQuartSpans:
     async def test_excluded_path_is_not_traced(self, tracing):
         await _quart_app(tracing).get("/health")
         assert tracing.spans() == ()
+
+
+class TestNotOptedIn:
+    """Another library's provider (Langfuse installs the SDK and sets one)
+    must see no change from auditry until the service opts in."""
+
+    def test_log_lines_carry_no_trace_ids(self, foreign, capsys):
+        _capture_logs()
+        with foreign.tracer.start_as_current_span("llm-call"):
+            get_logger("test").info("inside")
+        assert "trace_id" not in _log_lines(capsys)[-1]
+
+    def test_outbound_headers_carry_no_traceparent(self, foreign):
+        with foreign.tracer.start_as_current_span("llm-call"):
+            assert "traceparent" not in outbound_headers()
+
+    def test_with_correlation_adds_no_span_and_continues_no_trace(self, foreign):
+        @with_correlation
+        def task():
+            return otel_trace.get_current_span().get_span_context().is_valid
+
+        assert task(traceparent=TRACEPARENT) is False
+        assert foreign.spans() == ()
+
+    def test_active_span_is_not_renamed_or_tagged(self, foreign):
+        with foreign.tracer.start_as_current_span("llm-call"):
+            annotate_server_span("GET", "/items/{item_id}", "c1")
+        (span,) = foreign.spans()
+        assert span.name == "llm-call"
+        assert dict(span.attributes) == {}
 
 
 class TestTracingConfig:
@@ -379,6 +481,28 @@ class TestSpansDoNotLeak:
         (exported,) = memory.get_finished_spans()
         assert "app.account_number" not in exported.attributes
 
+    def test_config_patterns_apply_to_spans_at_export_time(self, tracing):
+        _fastapi_app(tracing, additional_redaction_patterns=["account_number"])
+        with tracing.tracer.start_as_current_span("work") as span:
+            span.set_attributes({"app.account_number": SECRET, "server.address": "h"})
+        (exported,) = tracing.spans()
+        assert dict(exported.attributes) == {"server.address": "h"}
+
+
+_CUSTOMER_PAYLOAD_ATTRIBUTES = {
+    "gen_ai.system_instructions": SECRET,
+    "gen_ai.tool.call.arguments": SECRET,
+    "gen_ai.tool.call.result": SECRET,
+    "user.hash": SECRET,
+    "user.full_name": SECRET,
+    "input.value": SECRET,
+    "output.value": SECRET,
+    "traceloop.entity.input": SECRET,
+    "traceloop.entity.output": SECRET,
+    "langfuse.observation.input": SECRET,
+    "langfuse.trace.output": SECRET,
+}
+
 
 _LEVEL_ATTRIBUTES = {
     "url.full": f"https://user:{SECRET}@api.example.com/files/{SECRET}.pdf?q={SECRET}#frag",
@@ -431,12 +555,13 @@ class TestRedactionLevels:
         with pytest.raises(ValueError, match="unknown span redaction level"):
             build_tracer_provider(exporter=InMemorySpanExporter(), redaction_level="hgih")
 
-    def test_none_exports_spans_as_recorded(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="auditry.otel"):
-            exported = _export_at(RedactionLevel.NONE, error=ValueError(SECRET))
+    def test_none_exports_spans_as_recorded(self, capsys):
+        _capture_logs()
+        exported = _export_at(RedactionLevel.NONE, error=ValueError(SECRET))
         assert dict(exported.attributes) == _LEVEL_ATTRIBUTES
         assert exported.status.description == SECRET
-        assert "span redaction is off" in caplog.text
+        (line,) = _log_lines(capsys)
+        assert line["message"].startswith("span redaction is off")
 
     def test_low_removes_secrets_only(self):
         exported = _export_at("low")
@@ -479,6 +604,16 @@ class TestRedactionLevels:
         (exported,) = memory.get_finished_spans()
         assert "app.account_number" not in exported.attributes
 
+    @pytest.mark.parametrize("level", ["medium", "high"])
+    def test_genai_payloads_and_user_identity_are_dropped(self, level):
+        attributes = {**_CUSTOMER_PAYLOAD_ATTRIBUTES, "gen_ai.request.model": "m"}
+        exported = _export_at(level, attributes)
+        assert dict(exported.attributes) == {"gen_ai.request.model": "m"}
+
+    def test_genai_payloads_are_kept_at_low(self):
+        exported = _export_at("low", _CUSTOMER_PAYLOAD_ATTRIBUTES)
+        assert dict(exported.attributes) == _CUSTOMER_PAYLOAD_ATTRIBUTES
+
     def test_unparsable_url_is_dropped_at_low(self):
         exported = _export_at("low", {"url.full": "http://[::1/x", "http.method": "GET"})
         assert dict(exported.attributes) == {"http.method": "GET"}
@@ -501,15 +636,17 @@ def _one_raw_span():
 class TestExportFailureSafety:
     """Instrumentation never fails the unit of work."""
 
-    def test_production_drops_the_batch_and_warns_once(self, caplog):
+    def test_production_drops_the_batch_and_warns_once_with_the_cause(self, capsys):
+        _capture_logs()
         exporter = RedactingSpanExporter(_FailingExporter())
         spans = _one_raw_span()
-        with caplog.at_level(logging.WARNING, logger="auditry.otel"):
-            first = exporter.export(spans)
-            second = exporter.export(spans)
+        first = exporter.export(spans)
+        second = exporter.export(spans)
         assert first is second
         assert first.name == "FAILURE"
-        assert [r.getMessage() for r in caplog.records] == ["span export failed; dropping batch"]
+        (line,) = _log_lines(capsys)
+        assert line["message"] == "span export failed; dropping batch"
+        assert line["error_type"] == "RuntimeError"
 
     def test_strict_mode_raises(self):
         _set_strict(True)
@@ -582,7 +719,7 @@ class TestPropagation:
             attrs = sqs_message_attributes()
         assert list(attrs) == ["correlation_id"]
 
-    def test_with_correlation_continues_the_producer_trace_and_restores(self):
+    def test_with_correlation_continues_the_producer_trace_and_restores(self, tracing):
         @with_correlation
         def task():
             return current_trace_ids()
@@ -606,7 +743,7 @@ class TestPropagation:
         assert task(traceparent=TRACEPARENT) == TRACEPARENT
 
     @pytest.mark.asyncio
-    async def test_with_correlation_async(self):
+    async def test_with_correlation_async(self, tracing):
         @with_correlation
         async def task():
             return current_trace_ids()
@@ -624,7 +761,7 @@ def worker_tracing(tracing, monkeypatch):
     """Route auditry's consumer spans to the test provider instead of the
     process-global one, which OpenTelemetry allows setting only once."""
     monkeypatch.setattr(
-        auditry_otel_context, "_tracer", lambda: tracing.provider.get_tracer("auditry")
+        auditry_otel_context.otel_trace, "get_tracer_provider", lambda: tracing.provider
     )
     return tracing
 
@@ -667,6 +804,32 @@ class TestWorkerSpans:
         assert _hex_trace_id(span) == TRACE_ID
         assert otel_trace.format_span_id(span.parent.span_id) == PARENT_SPAN_ID
         assert span.attributes["correlation_id"] == "c1"
+
+    def test_explicit_tracer_provider_receives_the_span(self, tracing, foreign):
+        @with_correlation(tracer_provider=tracing.provider)
+        def send_email():
+            return None
+
+        send_email(traceparent=TRACEPARENT)
+        (span,) = _consumer_spans(tracing)
+        assert span.name == "process send_email"
+        assert foreign.spans() == ()
+
+    def test_failed_task_records_no_exception_on_an_unredacted_provider(self, foreign):
+        auditry_otel_context._enable_tracing()
+
+        @with_correlation(tracer_provider=foreign.provider)
+        def task():
+            raise ValueError(f"customer {SECRET}")
+
+        with pytest.raises(ValueError, match="customer"):
+            task()
+        (span,) = foreign.spans()
+        assert span.events == ()
+        assert span.status.status_code is StatusCode.ERROR
+        assert span.status.description is None
+        assert span.attributes["error.type"] == "ValueError"
+        assert SECRET not in span.to_json()
 
     @pytest.mark.asyncio
     async def test_with_correlation_async_task_span(self, worker_tracing):

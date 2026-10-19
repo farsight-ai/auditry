@@ -13,6 +13,10 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
 - [Configuration](#configuration)
 - [Request / Correlation IDs](#request--correlation-ids)
 - [Tracing (OpenTelemetry)](#tracing-opentelemetry)
+  - [What You Get](#what-you-get)
+  - [Redaction](#redaction)
+  - [Outbound Call Spans](#outbound-call-spans)
+  - [Custom Exporter or Provider](#custom-exporter-or-provider)
 - [User Tracking](#user-tracking)
 - [Business Event Tagging (For Analytics)](#business-event-tagging-for-analytics)
 - [Log Output](#log-output)
@@ -336,7 +340,11 @@ callers into systems that assume opacity.
 
 Optional, Python 3.10+. A server span per request, `trace_id`/`span_id` on
 every log line, and W3C trace context across HTTP and worker hops. Services
-that don't install `auditry[otel]` and set `tracing=True` see no change.
+that don't opt in see no change, even when another dependency (FastAPI,
+Langfuse) installs the OpenTelemetry SDK and its own tracer provider: until
+`build_tracer_provider()` / `configure_tracing()` runs or `tracing=True` is
+set, auditry stamps no trace IDs, propagates no trace context, and adds
+nothing to that provider's spans.
 
 ```python
 from auditry.otel import configure_tracing
@@ -366,7 +374,11 @@ two services and a worker, to a local Grafana (`grafana/otel-lgtm`) or stderr.
   adds it to outbound calls; `@with_correlation` continues it from
   `traceparent`/`tracestate` job kwargs (producer:
   `enqueue(..., correlation_id=ensure_correlation_id(), **trace_context())`)
-  and runs the job in a `process <function name>` CONSUMER span.
+  and runs the job in a `process <function name>` CONSUMER span, from the
+  global provider or `@with_correlation(tracer_provider=provider)`. The span
+  carries ERROR status and `error.type` on failure, never an exception event.
+- **FastAPI 0.142+** traces requests natively; with `tracing=True` auditry's
+  span replaces FastAPI's, so each request is traced once.
 
 Baggage is never propagated, and the SQS helpers carry only the correlation
 ID. For a queue, put `trace_context()` into the message attributes on send,
@@ -385,7 +397,7 @@ everything the one below does, plus:
 |---|---|
 | `none` | nothing (logs a warning at startup) |
 | `low` | header attributes, query strings, URL fragments and userinfo, and attributes matching the log redaction patterns (`token`, `password`, ...) |
-| `medium` | client IP and user agent, full URLs, raw paths (replaced by the route template), SQL statements, and attributes matching the forbidden metric-dimension patterns (`email`, `query`, `prompt`, ...) or `content` |
+| `medium` | client IP, user agent, and `user.*`, full URLs, raw paths (replaced by the route template), SQL statements, GenAI payloads (`gen_ai.system_instructions`, `gen_ai.tool.call.arguments`/`.result`, `input.value`, `output.value`, `traceloop.entity.*`, Langfuse input/output), and attributes matching the forbidden metric-dimension patterns (`email`, `query`, `prompt`, ...) or `content` |
 | `high` (default) | exception messages, stack traces, and status descriptions; only the exception type is kept |
 
 Matching is by attribute **name**, so only put system-generated values on
@@ -395,7 +407,9 @@ sizes, or opaque IDs are kept even when their name matches a pattern
 (`gen_ai.usage.input_tokens`, `http.response_content_length`,
 `messaging.message.id`, ...). Source paths (`code.filepath`) are not: they
 can be absolute and name a user or directory. Add patterns with
-`additional_redaction_patterns=[...]`; they apply to every key, including the
+`ObservabilityConfig(additional_redaction_patterns=[...])`, which applies to
+logs and spans, or `configure_tracing(additional_redaction_patterns=[...])`
+for spans only (e.g. in a worker); they apply to every key, including the
 ones kept above. A failing exporter drops the batch and
 warns once per error type; in strict mode it raises.
 
@@ -420,7 +434,9 @@ BotocoreInstrumentor().instrument(tracer_provider=provider)
 `configure_tracing(exporter=...)` takes any `SpanExporter` and still wraps it
 in `RedactingSpanExporter`. `build_tracer_provider(...)` returns a provider
 without installing it globally; pass it as `create_middleware(...,
-tracer_provider=...)` (e.g. with `InMemorySpanExporter` in tests).
+tracer_provider=...)` and `@with_correlation(tracer_provider=...)`, e.g. when
+another library owns the global provider, or with `InMemorySpanExporter` in
+tests.
 
 ## Metrics (CloudWatch EMF)
 

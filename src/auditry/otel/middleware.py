@@ -25,6 +25,10 @@ class TracingMiddleware:
     Must be the outermost middleware so the span is active while auditry
     writes its request log line. Header capture is never configured, and the
     per-message ``receive``/``send`` child spans are disabled.
+
+    ``self.app`` is the ``OpenTelemetryMiddleware``: FastAPI 0.142+ walks the
+    ``.app`` chain of its middleware stack for one and, when it finds it,
+    turns its own native request tracing off, so a request is traced once.
     """
 
     def __init__(
@@ -33,9 +37,9 @@ class TracingMiddleware:
         excluded_paths: Optional[Union[list[str], dict[str, list[str]]]] = None,
         tracer_provider: Optional[TracerProvider] = None,
     ) -> None:
-        self.app = app
+        self.untraced_app = app
         self.excluded_paths = excluded_paths
-        self.traced_app = OpenTelemetryMiddleware(
+        self.app = OpenTelemetryMiddleware(
             app,
             default_span_details=_method_only_span_details,
             tracer_provider=tracer_provider,
@@ -46,6 +50,6 @@ class TracingMiddleware:
         if scope["type"] == "http" and should_exclude_path(
             scope.get("path", ""), scope.get("method", ""), self.excluded_paths
         ):
-            await self.app(scope, receive, send)
+            await self.untraced_app(scope, receive, send)
             return
-        await self.traced_app(scope, receive, send)
+        await self.app(scope, receive, send)

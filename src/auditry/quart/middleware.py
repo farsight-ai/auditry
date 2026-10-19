@@ -11,10 +11,14 @@ from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
-from ..otel_context import annotate_server_span
+from ..otel_context import OTEL_AVAILABLE, _register_config, annotate_server_span
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
+
+# The otel extra is optional; ObservabilityConfig(tracing=True) requires it.
+if OTEL_AVAILABLE:
+    from ..otel.middleware import TracingMiddleware
 
 
 class QuartMiddleware(BaseMiddleware):
@@ -43,9 +47,6 @@ class QuartMiddleware(BaseMiddleware):
 
     def _setup_tracing_middleware(self, tracer_provider: Any) -> None:
         """Wrap the ASGI app outermost, so the span is active for every hook."""
-        # Imported only when enabled: the otel extra is optional.
-        from ..otel.middleware import TracingMiddleware
-
         self.app.asgi_app = TracingMiddleware(  # type: ignore[assignment]
             self.app.asgi_app,
             excluded_paths=self.config.excluded_paths,
@@ -247,6 +248,7 @@ def create_middleware(
     """
     _set_config_service(config.service_name)
     _set_correlation_header(config.correlation_id_header)
+    _register_config(config.additional_redaction_patterns, config.tracing)
 
     # Create and register the middleware
     QuartMiddleware(app, config, tracer_provider)

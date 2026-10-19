@@ -465,6 +465,8 @@ class TestReservedPipelineKeys:
             "version",
             "environment",
             "correlation_id",
+            "trace_id",
+            "span_id",
             "exc_info",
             "_aws",
         ],

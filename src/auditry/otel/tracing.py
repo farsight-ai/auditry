@@ -11,12 +11,16 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.sampling import Sampler
 
 from ..logging_config import resolve_service_context
+from ..otel_context import _enable_tracing
 from .exporter import RedactingSpanExporter, RedactionLevel
 
 __all__ = ["build_tracer_provider", "configure_tracing"]
 
 
-def build_tracer_provider(
+# Keyword-only settings, each optional with its own fallback; grouping them
+# into an options object would only move the same list.
+def build_tracer_provider(  # noqa: PLR0913
+    *,
     service: Optional[str] = None,
     version: Optional[str] = None,
     environment: Optional[str] = None,
@@ -37,6 +41,11 @@ def build_tracer_provider(
     ``redaction_level`` (``none``/``low``/``medium``/``high``) defaults to the
     ``AUDITRY_TRACE_REDACTION`` env var, then ``high``; see
     :class:`~auditry.otel.exporter.RedactionLevel`.
+    ``additional_redaction_patterns`` add to those of every
+    ``ObservabilityConfig`` passed to ``create_middleware``.
+
+    Building a provider opts the process in to auditry tracing (see
+    :func:`auditry.otel_context.tracing_enabled`).
     """
     context = resolve_service_context(service, version, environment)
     resource = Resource.create(
@@ -58,10 +67,12 @@ def build_tracer_provider(
             )
         )
     )
+    _enable_tracing()
     return provider
 
 
-def configure_tracing(
+def configure_tracing(  # noqa: PLR0913
+    *,
     service: Optional[str] = None,
     version: Optional[str] = None,
     environment: Optional[str] = None,
@@ -86,13 +97,13 @@ def configure_tracing(
             "and pass it to create_middleware(tracer_provider=...)"
         )
     provider = build_tracer_provider(
-        service,
-        version,
-        environment,
-        exporter,
-        sampler,
-        additional_redaction_patterns,
-        redaction_level,
+        service=service,
+        version=version,
+        environment=environment,
+        exporter=exporter,
+        sampler=sampler,
+        additional_redaction_patterns=additional_redaction_patterns,
+        redaction_level=redaction_level,
     )
     otel_trace.set_tracer_provider(provider)
     return provider

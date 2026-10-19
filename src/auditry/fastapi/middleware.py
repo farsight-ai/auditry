@@ -10,10 +10,14 @@ from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
-from ..otel_context import annotate_server_span
+from ..otel_context import OTEL_AVAILABLE, _register_config, annotate_server_span
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
+
+# The otel extra is optional; ObservabilityConfig(tracing=True) requires it.
+if OTEL_AVAILABLE:
+    from ..otel.middleware import TracingMiddleware
 
 
 def _route_template(scope: dict[str, Any]) -> Optional[str]:
@@ -183,13 +187,11 @@ def create_middleware(app, config: ObservabilityConfig, tracer_provider: Any = N
     """
     _set_config_service(config.service_name)
     _set_correlation_header(config.correlation_id_header)
+    _register_config(config.additional_redaction_patterns, config.tracing)
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)
     if config.tracing:
-        # Imported only when enabled: the otel extra is optional.
-        from ..otel.middleware import TracingMiddleware
-
         app.add_middleware(
             TracingMiddleware,
             excluded_paths=config.excluded_paths,

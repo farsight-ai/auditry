@@ -13,7 +13,7 @@ helpers here so the ID survives every boundary:
 - SQS/SNS: ``sqs_message_attributes()`` on send, ``bind_from_sqs_message()``
   on receive.
 
-With the ``otel`` extra, ``outbound_headers()`` and ``with_correlation`` also
+With tracing enabled, ``outbound_headers()`` and ``with_correlation`` also
 carry the W3C trace context (``traceparent``/``tracestate``), so a trace
 continues across the hop (see ``auditry.otel_context``). The SQS helpers
 carry only the correlation ID.
@@ -28,7 +28,7 @@ import inspect
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar, overload
 
 from asgi_correlation_id import correlation_id
 
@@ -153,8 +153,8 @@ def outbound_headers(
     Also attach these to third-party API calls where the SDK allows custom
     headers/metadata, so vendor-side audit trails line up with your logs.
 
-    Inside a span, the active ``traceparent``/``tracestate`` replace any
-    passed in ``extra``.
+    Inside a span, with tracing enabled, the active
+    ``traceparent``/``tracestate`` replace any passed in ``extra``.
     """
     headers = dict(extra) if extra else {}
     headers.update(trace_context())
@@ -206,7 +206,15 @@ def bind_from_sqs_message(message: dict[str, Any]) -> str:
     return bind_correlation_id(extract_correlation_id(message))
 
 
-def with_correlation(func: F) -> F:
+@overload
+def with_correlation(func: F) -> F: ...
+
+
+@overload
+def with_correlation(*, tracer_provider: Optional[Any] = None) -> Callable[[F], F]: ...
+
+
+def with_correlation(func: Optional[F] = None, *, tracer_provider: Optional[Any] = None) -> Any:
     """
     Decorator for worker task functions (sync or async): binds the correlation
     ID before the task body runs, so every log line inside carries it.
@@ -218,20 +226,28 @@ def with_correlation(func: F) -> F:
     else a fresh random ID. An ID that is already in flight is propagated,
     never replaced. The kwarg is left in place if the wrapped function
     accepts it, and stripped otherwise. ``traceparent``/``tracestate``
-    kwargs are handled the same way and continue the producer's trace, so a
-    producer passes ``correlation_id=ensure_correlation_id(), **trace_context()``.
+    kwargs are handled the same way and, with tracing enabled, continue the
+    producer's trace, so a producer passes
+    ``correlation_id=ensure_correlation_id(), **trace_context()``.
 
     The binding is scoped to the task: the previous correlation context is
     restored when the task returns or raises, so a long-lived worker never
-    logs a completed task's ID against later, unrelated work. With the
-    ``otel`` extra the task runs in a CONSUMER span named
-    ``process <function name>``.
+    logs a completed task's ID against later, unrelated work. With tracing
+    enabled the task runs in a CONSUMER span named
+    ``process <function name>``, from ``tracer_provider`` or else the global
+    provider.
 
     ```python
     @with_correlation
     async def process_job(ctx, job_spec, correlation_id=None): ...
+
+    @with_correlation(tracer_provider=provider)
+    async def resize_image(ctx, key, correlation_id=None): ...
     ```
     """
+    if func is None:
+        return functools.partial(with_correlation, tracer_provider=tracer_provider)
+
     # A partial or callable instance has no __name__; its type names the span.
     span_name = f"process {getattr(func, '__name__', type(func).__name__)}"
     params = inspect.signature(func).parameters
@@ -261,26 +277,29 @@ def with_correlation(func: F) -> F:
         detach_trace_context(trace_token)
         correlation_id.reset(token)
 
+    def _span() -> Any:
+        return consumer_span(span_name, correlation_id.get(), tracer_provider)
+
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             tokens = _bind(kwargs)
             try:
-                with consumer_span(span_name, correlation_id.get()):
+                with _span():
                     return await func(*args, **kwargs)
             finally:
                 _unbind(tokens)
 
-        return async_wrapper  # type: ignore[return-value]
+        return async_wrapper
 
     @functools.wraps(func)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         tokens = _bind(kwargs)
         try:
-            with consumer_span(span_name, correlation_id.get()):
+            with _span():
                 return func(*args, **kwargs)
         finally:
             _unbind(tokens)
 
-    return sync_wrapper  # type: ignore[return-value]
+    return sync_wrapper

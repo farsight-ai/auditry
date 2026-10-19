@@ -1,6 +1,5 @@
 """Span exporter that strips customer data before spans leave the process."""
 
-import logging
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
@@ -11,13 +10,14 @@ from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import Link, Status
 
-from ..logging_config import is_strict
+from ..logging_config import get_logger, is_strict
 from ..metrics import FORBIDDEN_DIMENSION_PATTERNS, _normalize
+from ..otel_context import span_redaction_patterns
 from ..redaction import DEFAULT_REDACTION_PATTERNS
 
 __all__ = ["REDACTION_LEVEL_ENV", "RedactingSpanExporter", "RedactionLevel"]
 
-_logger = logging.getLogger("auditry.otel")
+_logger = get_logger("auditry.otel")
 
 REDACTION_LEVEL_ENV = "AUDITRY_TRACE_REDACTION"
 
@@ -31,10 +31,13 @@ class RedactionLevel(str, Enum):
     - ``LOW``: secrets. Header attributes, ``url.query``, the query string,
       fragment, and userinfo of URLs, and attributes matching the log
       redaction patterns (``token``, ``password``, ...).
-    - ``MEDIUM``: customer data in attributes. Client address and user
-      agent, full URLs, raw paths (replaced by the route template), and
-      SQL statements, and attributes matching the forbidden
-      metric-dimension patterns (``email``, ``query``, ...) or ``content``.
+    - ``MEDIUM``: customer data in attributes. Client address, user agent,
+      and ``user.*`` identity, full URLs, raw paths (replaced by the route
+      template), SQL statements, GenAI payloads (system instructions, tool
+      call arguments and results, ``input.value``/``output.value``,
+      ``traceloop.entity.*``, Langfuse input/output), and attributes
+      matching the forbidden metric-dimension patterns (``email``,
+      ``query``, ...) or ``content``.
     - ``HIGH`` (default): free text. Exception messages, stack traces, and
       status descriptions; only the exception type is kept.
     """
@@ -72,6 +75,7 @@ _HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
 _QUERY_ATTRIBUTES = frozenset({"url.query"})
 
 # Client identity: never operational data.
+_CLIENT_PREFIXES = ("user.",)
 _CLIENT_ATTRIBUTES = frozenset(
     {
         "client.address",
@@ -93,6 +97,24 @@ _RAW_URL_ATTRIBUTES = frozenset({"http.url", "url.full"})
 
 # GenAI instrumentation records prompt and response text under "content".
 _TRACE_ONLY_PATTERNS = ("content",)
+
+# GenAI payloads whose names match no pattern: semantic conventions,
+# OpenInference (input.value), OpenLLMetry (traceloop.entity.input/output),
+# and Langfuse.
+_GENAI_PAYLOAD_PREFIXES = ("traceloop.entity.",)
+_GENAI_PAYLOAD_ATTRIBUTES = frozenset(
+    {
+        "gen_ai.system_instructions",
+        "gen_ai.tool.call.arguments",
+        "gen_ai.tool.call.result",
+        "input.value",
+        "output.value",
+        "langfuse.observation.input",
+        "langfuse.observation.output",
+        "langfuse.trace.input",
+        "langfuse.trace.output",
+    }
+)
 
 # Statement text interpolates customer values. db.query.text is caught by the
 # "query" pattern; db.statement (the pre-stable name) matches no pattern.
@@ -125,6 +147,16 @@ _EXCEPTION_EVENT = "exception"
 _EXCEPTION_KEPT = frozenset({"exception.type", "exception.escaped"})
 
 
+def _is_customer_data(key: str) -> bool:
+    """Keys dropped from ``MEDIUM`` up whatever their name matches."""
+    return (
+        key in _CLIENT_ATTRIBUTES
+        or key in _STATEMENT_ATTRIBUTES
+        or key in _GENAI_PAYLOAD_ATTRIBUTES
+        or key.startswith(_CLIENT_PREFIXES + _GENAI_PAYLOAD_PREFIXES)
+    )
+
+
 def _without_secrets(url: str) -> Optional[str]:
     """Scheme, host, port, and path only; ``None`` when ``url`` is unparsable."""
     try:
@@ -142,7 +174,9 @@ class RedactingSpanExporter(SpanExporter):
     Spans are immutable once ended, so redaction happens here, at export,
     rather than in a span processor. What is removed depends on ``level``
     (see :class:`RedactionLevel`); the default, ``HIGH``, lets only
-    OPERATIONAL data leave. ``additional_patterns`` apply at every level
+    OPERATIONAL data leave. ``additional_patterns``, and the
+    ``additional_redaction_patterns`` of every ``ObservabilityConfig`` passed
+    to ``create_middleware`` (read at export time), apply at every level
     except ``NONE``, including to keys otherwise kept as operational.
 
     A failure while redacting or exporting drops the batch and logs one
@@ -162,6 +196,7 @@ class RedactingSpanExporter(SpanExporter):
             patterns += [*FORBIDDEN_DIMENSION_PATTERNS, *_TRACE_ONLY_PATTERNS]
         self._patterns = tuple(_normalize(p) for p in patterns)
         self._custom_patterns = tuple(_normalize(p) for p in additional_patterns or ())
+        self._config_patterns: tuple[frozenset[str], tuple[str, ...]] = (frozenset(), ())
         self._warned: set[type[BaseException]] = set()
         if self._level is RedactionLevel.NONE:
             _logger.warning("span redaction is off; spans are exported as recorded")
@@ -173,7 +208,8 @@ class RedactingSpanExporter(SpanExporter):
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         try:
             if self._level is not RedactionLevel.NONE:
-                spans = [self._redact_span(span) for span in spans]
+                custom = self._custom_patterns + self._registered_patterns()
+                spans = [self._redact_span(span, custom) for span in spans]
             return self._exporter.export(spans)
         except Exception as error:
             if is_strict():
@@ -181,8 +217,7 @@ class RedactingSpanExporter(SpanExporter):
             if type(error) not in self._warned:
                 self._warned.add(type(error))
                 _logger.warning(
-                    "span export failed; dropping batch",
-                    extra={"error_type": type(error).__name__},
+                    "span export failed; dropping batch", error_type=type(error).__name__
                 )
             return SpanExportResult.FAILURE
 
@@ -192,16 +227,23 @@ class RedactingSpanExporter(SpanExporter):
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return self._exporter.force_flush(timeout_millis)
 
-    def _redact_span(self, span: ReadableSpan) -> ReadableSpan:
+    def _registered_patterns(self) -> tuple[str, ...]:
+        """The config patterns, normalized once per change rather than per span."""
+        registered = span_redaction_patterns()
+        if registered is not self._config_patterns[0]:
+            self._config_patterns = (registered, tuple(_normalize(p) for p in registered))
+        return self._config_patterns[1]
+
+    def _redact_span(self, span: ReadableSpan, custom: tuple[str, ...]) -> ReadableSpan:
         high = self._level >= RedactionLevel.HIGH
         return ReadableSpan(
             name=span.name,
             context=span.context,
             parent=span.parent,
             resource=span.resource,
-            attributes=self._scrub(span.attributes),
-            events=[self._redact_event(event) for event in span.events],
-            links=[Link(link.context, self._scrub(link.attributes)) for link in span.links],
+            attributes=self._scrub(span.attributes, custom),
+            events=[self._redact_event(event, custom) for event in span.events],
+            links=[Link(link.context, self._scrub(link.attributes, custom)) for link in span.links],
             kind=span.kind,
             status=Status(span.status.status_code) if high else span.status,
             start_time=span.start_time,
@@ -209,10 +251,10 @@ class RedactingSpanExporter(SpanExporter):
             instrumentation_scope=span.instrumentation_scope,
         )
 
-    def _redact_event(self, event: Event) -> Event:
+    def _redact_event(self, event: Event, custom: tuple[str, ...]) -> Event:
         attributes = event.attributes or {}
         if event.name != _EXCEPTION_EVENT:
-            attributes = self._scrub(attributes)
+            attributes = self._scrub(attributes, custom)
         elif self._level >= RedactionLevel.HIGH:
             attributes = {k: v for k, v in attributes.items() if k in _EXCEPTION_KEPT}
         # Below HIGH the exception event is exported whole: pattern matching
@@ -220,23 +262,23 @@ class RedactingSpanExporter(SpanExporter):
         # which ends with the same text.
         return Event(event.name, attributes, event.timestamp)
 
-    def _scrub(self, attributes: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    def _scrub(
+        self, attributes: Optional[Mapping[str, Any]], custom: tuple[str, ...]
+    ) -> dict[str, Any]:
         attributes = attributes or {}
-        medium = self._level >= RedactionLevel.MEDIUM
         route = attributes.get(_ROUTE_ATTRIBUTE)
         scrubbed: dict[str, Any] = {}
         for key, value in attributes.items():
             if key.startswith(_HEADER_PREFIXES) or key in _QUERY_ATTRIBUTES:
                 continue
-            if medium and (key in _CLIENT_ATTRIBUTES or key in _STATEMENT_ATTRIBUTES):
+            if self._level >= RedactionLevel.MEDIUM and _is_customer_data(key):
                 continue
             if key in _RAW_URL_ATTRIBUTES or key in _RAW_PATH_ATTRIBUTES:
-                value = self._redact_location(key, value, route)
-                if value is None:
-                    continue
-            elif self._is_sensitive(key):
-                continue
-            scrubbed[key] = value
+                location = self._redact_location(key, value, route)
+                if location is not None:
+                    scrubbed[key] = location
+            elif not self._is_sensitive(key, custom):
+                scrubbed[key] = value
         return scrubbed
 
     def _redact_location(self, key: str, value: Any, route: Any) -> Any:
@@ -245,9 +287,9 @@ class RedactingSpanExporter(SpanExporter):
             return route if key in _RAW_PATH_ATTRIBUTES and route else None
         return _without_secrets(value) if isinstance(value, str) else None
 
-    def _is_sensitive(self, key: str) -> bool:
+    def _is_sensitive(self, key: str, custom: tuple[str, ...]) -> bool:
         normalized = _normalize(key)
-        if any(pattern in normalized for pattern in self._custom_patterns):
+        if any(pattern in normalized for pattern in custom):
             return True
         if key in _SAFE_ATTRIBUTES:
             return False

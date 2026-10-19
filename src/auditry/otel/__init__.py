@@ -1,4 +1,4 @@
-"""OpenTelemetry tracing for auditry. Requires the ``otel`` extra."""
+"""OpenTelemetry tracing for auditry. Requires the otel extra."""
 
 from .exporter import REDACTION_LEVEL_ENV, RedactingSpanExporter, RedactionLevel
 from .middleware import TracingMiddleware
