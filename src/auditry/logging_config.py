@@ -39,6 +39,7 @@ from typing import Any
 import structlog
 from asgi_correlation_id import correlation_id
 
+from .correlation import CORRELATION_ID_FIELD
 from .tracing import current_trace_fields, drop_or_raise
 
 # ---------------------------------------------------------------------------
@@ -184,10 +185,10 @@ def _add_correlation_id(
     be worse than absence: each line would carry a *different* ID, which
     falsely implies correlation where there is none.
     """
-    if "correlation_id" not in event_dict:
+    if CORRELATION_ID_FIELD not in event_dict:
         cid = correlation_id.get()
         if cid:
-            event_dict["correlation_id"] = cid
+            event_dict[CORRELATION_ID_FIELD] = cid
     return event_dict
 
 

@@ -11,6 +11,7 @@ from asgi_correlation_id import correlation_id
 
 from auditry.logging_config import _set_config_service, _set_strict, set_trace_handler
 from auditry.propagation import _set_correlation_header
+from auditry.span_scrubbing import set_span_scrub_policy
 from auditry.tracing import _reset_warnings
 
 
@@ -47,19 +48,21 @@ class OtelHarness:
 
 @pytest.fixture(scope="session")
 def _otel_session() -> OtelHarness:
-    pytest.importorskip("opentelemetry.sdk")
-    from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    # Session-scoped and optional: modules that never name it run without
+    # the otel extra, so its modules are skipped here, not imported at the top.
+    sdk_trace = pytest.importorskip("opentelemetry.sdk.trace")
+    sdk_export = pytest.importorskip("opentelemetry.sdk.trace.export")
+    in_memory = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+    trace = pytest.importorskip("opentelemetry.trace")
+    auditry_otel = pytest.importorskip("auditry.otel")
 
-    from auditry.otel import ScrubbingSpanExporter
-
-    raw = InMemorySpanExporter()
-    scrubbed = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(raw))
-    provider.add_span_processor(SimpleSpanProcessor(ScrubbingSpanExporter(scrubbed)))
+    raw = in_memory.InMemorySpanExporter()
+    scrubbed = in_memory.InMemorySpanExporter()
+    provider = sdk_trace.TracerProvider()
+    provider.add_span_processor(sdk_export.SimpleSpanProcessor(raw))
+    provider.add_span_processor(
+        sdk_export.SimpleSpanProcessor(auditry_otel.ScrubbingSpanExporter(scrubbed))
+    )
     # Takes effect once per process; instrumentors that accept
     # tracer_provider= are also given it explicitly.
     trace.set_tracer_provider(provider)
@@ -70,8 +73,6 @@ def _otel_session() -> OtelHarness:
 def otel(_otel_session: OtelHarness) -> Any:
     """The shared harness with both exporters empty and the default span
     scrub policy."""
-    from auditry.span_scrubbing import set_span_scrub_policy
-
     _otel_session.clear()
     set_span_scrub_policy(None)
     yield _otel_session

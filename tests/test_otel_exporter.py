@@ -234,8 +234,7 @@ class TestPolicySource:
 class TestFailClosed:
     @pytest.fixture
     def exporter(self, monkeypatch):
-        from auditry.otel import exporter as module
-
+        module = auditry_otel.exporter
         real = module.scrub_span
 
         def scrub_or_explode(span, policy):
@@ -346,16 +345,15 @@ def test_entry_point_resolves(name, cls):
 
 
 def test_raw_asgi_app_exception_through_opentelemetry_middleware(otel):
-    pytest.importorskip("opentelemetry.instrumentation.asgi")
-    from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
-    from starlette.testclient import TestClient
+    asgi = pytest.importorskip("opentelemetry.instrumentation.asgi")
+    testclient = pytest.importorskip("starlette.testclient")
 
     async def app(scope, receive, send):
         raise ValueError(MESSAGE)
 
-    wrapped = OpenTelemetryMiddleware(app, tracer_provider=otel.provider)
+    wrapped = asgi.OpenTelemetryMiddleware(app, tracer_provider=otel.provider)
     with pytest.raises(ValueError, match="cannot open"):
-        TestClient(wrapped).get("/files/q3.pdf")
+        testclient.TestClient(wrapped).get("/files/q3.pdf")
 
     (raw,) = [span for span in otel.raw_spans() if span.kind is trace.SpanKind.SERVER]
     assert MESSAGE in raw.status.description

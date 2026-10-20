@@ -1,8 +1,10 @@
 """
 OpenTelemetry API glue for the core modules.
 
-Every function is a no-op when the ``otel`` extra is not installed, so
-``pip install auditry`` never needs OpenTelemetry. Propagation uses W3C Trace
+Every function is a no-op when the OpenTelemetry API (``opentelemetry-api``)
+is not importable, so ``pip install auditry`` never needs OpenTelemetry. The
+API alone turns them on, whether it came with the ``otel`` extra or with
+another package, such as Langfuse, that depends on it. Propagation uses W3C Trace
 Context only, through an explicit propagator rather than the global one: the
 behavior does not depend on ``OTEL_PROPAGATORS``, and ``baggage`` (arbitrary
 application data) is never forwarded.
@@ -15,6 +17,8 @@ from contextvars import Token
 from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
 import structlog
+
+from .correlation import CORRELATION_ID_FIELD
 
 try:
     from opentelemetry import context as otel_context
@@ -47,8 +51,7 @@ TRACE_ID_FIELD = "trace_id"
 SPAN_ID_FIELD = "span_id"
 TRACE_LOG_FIELDS = (TRACE_ID_FIELD, SPAN_ID_FIELD)
 
-# Same name as the log field, so one name joins logs and traces.
-CORRELATION_ID_ATTRIBUTE = "correlation_id"
+CORRELATION_ID_ATTRIBUTE = CORRELATION_ID_FIELD
 
 # Tracing failure warnings go through this structlog logger.
 OTEL_LOGGER_NAME = "auditry.otel"
@@ -76,7 +79,7 @@ def drop_or_raise(
     """
     # Deferred: logging_config imports this module. Only the failure path
     # pays for the lookup.
-    from .logging_config import is_strict
+    from .logging_config import is_strict  # noqa: PLC0415 -- import cycle, see above
 
     if is_strict():
         raise exc

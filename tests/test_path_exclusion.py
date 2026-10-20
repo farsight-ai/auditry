@@ -8,8 +8,7 @@ from fastapi.responses import StreamingResponse
 from quart import Quart, Response, stream_with_context
 from src.auditry import ObservabilityConfig, configure_logging
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
-from src.auditry.models import DEFAULT_EXCLUDED_PATHS
-from src.auditry.path_matcher import excluded_paths_to_url_patterns, should_exclude_path
+from src.auditry.path_matcher import app_path, should_exclude_path, should_exclude_scope
 from src.auditry.quart import create_middleware as create_quart_middleware
 
 
@@ -269,7 +268,6 @@ async def test_fastapi_non_excluded_path_is_logged(fastapi_app_with_exclusions, 
 
 
 def test_matcher_basics():
-    from src.auditry.path_matcher import should_exclude_path
 
     # exact
     assert should_exclude_path("/health", "GET", ["/health"])
@@ -288,7 +286,6 @@ def test_matcher_basics():
 
 
 def test_method_specific():
-    from src.auditry.path_matcher import should_exclude_path
 
     cfg = {"GET": ["/health"], "POST": ["/webhook"], "*": ["/admin/*"]}
     assert should_exclude_path("/health", "GET", cfg)
@@ -296,85 +293,35 @@ def test_method_specific():
     assert should_exclude_path("/admin/users", "DELETE", cfg)
 
 
-EQUIVALENCE_PATTERNS = [
-    *DEFAULT_EXCLUDED_PATHS,
-    "/metrics",
-    "/stream*",
-    "/api/*/internal",
-    "/admin/",
-    "/webhook/*",
-    "/item?",
-    "/v?/status",
-    "*health",
-]
-
-EQUIVALENCE_PATHS = [
-    "/",
-    "/health",
-    "/health/",
-    "/healthz",
-    "/health/deep",
-    "/api/health",
-    "/metrics",
-    "/metricsx",
-    "/stream",
-    "/streaming",
-    "/stream/events",
-    "/api/v1/internal",
-    "/api/v1/internal/x",
-    "/api/internal",
-    "/admin",
-    "/admin/",
-    "/admin/users/1",
-    "/webhook",
-    "/webhook/stripe",
-    "/item",
-    "/items",
-    "/itemss",
-    "/v1/status",
-    "/v12/status",
-    "/selfhealth",
-    "/files/q3.pdf",
-]
+def scope(path, root_path="", scope_type="http", **extra):
+    return {"type": scope_type, "path": path, "root_path": root_path, **extra}
 
 
-@pytest.mark.parametrize("path", EQUIVALENCE_PATHS)
-@pytest.mark.parametrize("pattern", EQUIVALENCE_PATTERNS)
-def test_url_patterns_match_what_should_exclude_path_matches(pattern, path):
-    """OpenTelemetry's ExcludeList, fed the translated patterns, skips
-    exactly the paths request logging skips."""
-    http_util = pytest.importorskip("opentelemetry.util.http")
-
-    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns([pattern]))
-    expected = should_exclude_path(path, "GET", [pattern])
-    assert exclude_list.url_disabled("http://host" + path) is expected
-    assert exclude_list.url_disabled("https://api.example.com:8443" + path) is expected
-
-
-def test_url_patterns_for_the_whole_default_list():
-    http_util = pytest.importorskip("opentelemetry.util.http")
-
-    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns(DEFAULT_EXCLUDED_PATHS))
-    for path in EQUIVALENCE_PATHS:
-        expected = should_exclude_path(path, "GET", DEFAULT_EXCLUDED_PATHS)
-        assert exclude_list.url_disabled("http://host" + path) is expected, path
+@pytest.mark.parametrize(
+    ("path", "root_path", "expected"),
+    [
+        ("/health", "", "/health"),
+        ("/svc/health", "/svc", "/health"),
+        ("/svcx/health", "/svc", "/svcx/health"),
+        ("/svc", "/svc", ""),
+        ("/other", "/svc", "/other"),
+    ],
+)
+def test_app_path_removes_the_root_path_at_a_segment_boundary(path, root_path, expected):
+    assert app_path(scope(path, root_path)) == expected
 
 
-def test_url_patterns_ignore_the_host():
-    http_util = pytest.importorskip("opentelemetry.util.http")
-
-    exclude_list = http_util.ExcludeList(excluded_paths_to_url_patterns(["th/", "health"]))
-    assert not exclude_list.url_disabled("http://health/x")
-    assert not exclude_list.url_disabled("http://xhealth/")
+def test_a_scope_is_matched_by_its_path_inside_the_app():
+    assert should_exclude_scope(scope("/svc/health", "/svc", method="GET"), ["/health"])
 
 
-def test_url_patterns_dict_form_uses_only_the_all_methods_key():
-    patterns = excluded_paths_to_url_patterns({"GET": ["/health"], "*": ["/admin/"]})
-    assert len(patterns) == 1
-    assert excluded_paths_to_url_patterns({"GET": ["/health"]}) == []
-    assert excluded_paths_to_url_patterns(None) == []
+def test_a_scope_is_matched_by_its_method():
+    assert not should_exclude_scope(scope("/stream", method="POST"), {"GET": ["/stream"]})
 
 
-def test_url_patterns_reject_commas():
-    with pytest.raises(ValueError, match="contains ','"):
-        excluded_paths_to_url_patterns(["/a,b"])
+def test_a_websocket_scope_matches_as_its_get_handshake():
+    assert should_exclude_scope(scope("/ws", scope_type="websocket"), {"GET": ["/ws"]})
+
+
+def test_a_lifespan_scope_is_never_excluded():
+    assert not should_exclude_scope({"type": "lifespan"}, ["/health"])

@@ -131,6 +131,10 @@ class TestServerSpans:
         await client.get(FILE_URL)
         assert len(otel.raw_server_spans()) == 1
 
+    async def test_excluded_path_under_a_root_path_gets_no_span(self, otel):
+        await traced_app().test_client().get("/svc/health", root_path="/svc")
+        assert otel.raw_spans() == []
+
     async def test_host_header_cannot_match_an_excluded_path(self, otel):
         client = traced_app(excluded_paths=["/stream*"]).test_client()
         response = await client.get(FILE_URL, headers={"Host": "example.com/stream"})

@@ -257,7 +257,8 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
 
     if config.tracing.instrument_server:
         require_otel("tracing.instrument_server", "opentelemetry.instrumentation.asgi")
-        from .tracing import instrument_quart
+        # Imported here: .tracing needs the otel extra, which require_otel checked.
+        from .tracing import instrument_quart  # noqa: PLC0415
 
         # After QuartMiddleware's CorrelationIdMiddleware wrap, so the span
         # is the outermost layer and active in every hook.

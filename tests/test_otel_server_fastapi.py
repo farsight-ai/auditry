@@ -27,12 +27,14 @@ FILE_URL = "/files/q3-board-deck.pdf?email=jane@example.com&token=abc&page=2"
 MESSAGE = "cannot open q3.pdf for jane@example.com"
 
 
-def make_config(**tracing):
+def make_config(excluded_paths=None, **tracing):
+    kwargs = {} if excluded_paths is None else {"excluded_paths": excluded_paths}
     return ObservabilityConfig(
         service_name="svc",
         log_request_body=False,
         log_response_body=False,
         tracing={"instrument_server": True, **tracing},
+        **kwargs,
     )
 
 
@@ -77,10 +79,14 @@ def add_routes(app):
     return app
 
 
-def traced_client(**tracing):
+def traced_client(root_path="", **config):
     app = add_routes(fastapi.FastAPI())
-    app = auditry_fastapi.create_middleware(app, make_config(**tracing))
-    return testclient.TestClient(app, raise_server_exceptions=False)
+    app = auditry_fastapi.create_middleware(app, make_config(**config))
+    return testclient.TestClient(app, raise_server_exceptions=False, root_path=root_path)
+
+
+def request_log_lines(log_lines):
+    return [line for line in log_lines() if line["message"].startswith("Request completed")]
 
 
 def trace_id_of(span):
@@ -105,6 +111,32 @@ class TestServerSpans:
         response = traced_client().get("/health")
         assert response.status_code == 200
         assert response.headers.get_list("x-request-id")
+        assert otel.raw_spans() == []
+
+    def test_method_specific_exclusion_skips_only_that_method(self, otel):
+        client = traced_client(excluded_paths={"POST": ["/files/*"]})
+        client.post("/files/q3.pdf")
+        assert otel.raw_spans() == []
+
+    def test_method_specific_exclusion_keeps_other_methods(self, otel):
+        traced_client(excluded_paths={"POST": ["/files/*"]}).get(FILE_URL)
+        assert len(otel.raw_server_spans()) == 1
+
+    def test_host_header_cannot_hide_a_request_from_its_span(self, otel):
+        client = traced_client(excluded_paths=["/stream*"])
+        client.get(FILE_URL, headers={"Host": "example.com/stream"})
+        (span,) = otel.raw_server_spans()
+        assert span.name == "GET /files/{name}"
+
+    def test_host_header_cannot_hide_a_request_from_its_log_line(self, otel, log_lines):
+        configure_logging(service="svc")
+        client = traced_client(excluded_paths=["/stream*"])
+        client.get(FILE_URL, headers={"Host": "example.com/stream"})
+        (line,) = request_log_lines(log_lines)
+        assert line["message"].startswith("Request completed: GET /files/q3-board-deck.pdf ")
+
+    def test_excluded_path_under_a_root_path_gets_no_span(self, otel):
+        traced_client(root_path="/svc").get("/svc/health")
         assert otel.raw_spans() == []
 
     def test_log_line_carries_the_span_trace_id(self, otel, log_lines):

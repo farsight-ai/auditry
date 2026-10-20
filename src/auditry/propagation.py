@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from asgi_correlation_id import correlation_id
 
+from .correlation import CORRELATION_ID_FIELD
 from .errors import MessageAttributeLimitError
 from .tracing import (
     attach_context,
@@ -65,7 +66,7 @@ DEFAULT_HEADER = "X-Request-ID"
 _sqs_attached: "ContextVar[tuple[Context, Context] | None]" = ContextVar(
     "auditry_sqs_attached", default=None
 )
-SQS_ATTRIBUTE_NAME = "correlation_id"
+SQS_ATTRIBUTE_NAME = CORRELATION_ID_FIELD
 
 # W3C Trace Context fields, used verbatim as header and message-attribute
 # names (the same names OTel's botocore/boto3sqs instrumentations use).

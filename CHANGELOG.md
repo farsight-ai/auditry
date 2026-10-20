@@ -4,7 +4,9 @@
 
 Optional OpenTelemetry tracing: trace IDs on log lines, W3C trace context
 across HTTP and SQS/SNS hops, a span exporter that scrubs sensitive data, and
-opt-in server spans. Everything new sits behind the `otel` extra;
+opt-in server spans. Everything new needs the `otel` extra, except trace IDs
+on log lines and trace context propagation, which turn on whenever the
+OpenTelemetry API is importable, as it is wherever Langfuse is installed.
 `pip install auditry` still pulls in no OpenTelemetry.
 
 ### Breaking
@@ -49,13 +51,21 @@ opt-in server spans. Everything new sits behind the `otel` extra;
   `query_param_allowlist`, `db_statement` and `keep_client_address`.
 - Opt-in server spans (`tracing.instrument_server=True`) for FastAPI
   (`FastAPIInstrumentor`) and Quart (OpenTelemetry's ASGI middleware, spans
-  renamed to the route rule), skipping `excluded_paths`. An app that is already
+  renamed to the route rule), skipping exactly the requests request logging
+  skips: `excluded_paths` matched against the path inside the app and the
+  method, method-specific patterns included. An app that is already
   instrumented is left alone.
 - CI runs the test suite on Python 3.11 and 3.12. The check names become
   `pytest (3.11)` and `pytest (3.12)`.
 
 ### Fixed
 
+- **FastAPI: excluded paths and the logged path come from the ASGI path.**
+  Request logging read `request.url.path`, which Starlette rebuilds from the
+  client's `Host` header, so a `Host` value containing `/` could skip logging
+  for an excluded pattern or change the path a line records. Exclusions now
+  match the path inside the app (any ASGI `root_path` removed, as Quart and
+  Starlette's routing do) and the line records the ASGI path.
 - **Quart: HTTP errors keep their status.** auditry's Quart error handler
   re-raised every exception, so a 404, an `abort(403)` or any other HTTP error
   left the app without a response and the server sent a 500, and the app's own

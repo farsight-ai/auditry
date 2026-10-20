@@ -25,6 +25,9 @@ __all__ = [
     "ScrubbingConsoleSpanExporter",
 ]
 
+# The OpenTelemetry SDK's own default for SpanExporter.force_flush.
+DEFAULT_FLUSH_TIMEOUT_MILLIS = 30_000
+
 
 def scrub_span(span: ReadableSpan, policy: SpanScrubPolicy) -> ReadableSpan:
     """A copy of ``span`` with every scrubbing rule applied.
@@ -114,7 +117,7 @@ class ScrubbingSpanExporter(SpanExporter):
     def shutdown(self) -> None:
         self._inner.shutdown()
 
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
+    def force_flush(self, timeout_millis: int = DEFAULT_FLUSH_TIMEOUT_MILLIS) -> bool:
         return self._inner.force_flush(timeout_millis)
 
 
@@ -125,7 +128,9 @@ class ScrubbingOTLPSpanExporter(ScrubbingSpanExporter):
     def __init__(self) -> None:
         # Imported on construction: it loads protobuf and requests, which a
         # service wrapping its own exporter never needs.
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415 -- see above
+            OTLPSpanExporter,
+        )
 
         super().__init__(OTLPSpanExporter())
 

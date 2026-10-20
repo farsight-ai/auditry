@@ -1,32 +1,56 @@
 """Opt-in OpenTelemetry server spans for FastAPI. Requires the ``otel`` extra."""
 
 from fastapi import FastAPI
+from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import TracerProvider
+from starlette.types import ASGIApp
 
 from ..models import ObservabilityConfig
-from ..path_matcher import excluded_paths_to_url_patterns
-from ..tracing import EXCLUDED_ASGI_SPANS
+from ..otel.asgi import TracedUnlessExcluded
+from ..tracing import EXCLUDED_ASGI_SPANS, drop_or_raise
 
 __all__ = ["instrument_fastapi"]
+
+# FastAPIInstrumentor's private marker on an app it instrumented.
+INSTRUMENTED_MARKER = "_is_instrumented_by_opentelemetry"
+
+
+class UnexpectedStackError(RuntimeError):
+    """FastAPIInstrumentor built a middleware stack without
+    OpenTelemetryMiddleware where this module expects it, so excluded paths
+    cannot be kept out of tracing."""
 
 
 def instrument_fastapi(
     app: FastAPI, config: ObservabilityConfig, tracer_provider: TracerProvider | None = None
 ) -> None:
     """One server span per request, named by route template, skipping
-    ``config.excluded_paths`` (see ``excluded_paths_to_url_patterns`` for
-    the dict-form and Host header limitations). No per-``receive``/``send``
-    child spans."""
-    # The private marker FastAPIInstrumentor sets on an app it instrumented.
+    ``config.excluded_paths`` exactly as request logging does, method-specific
+    patterns included. No per-``receive``/``send`` child spans."""
     # When the app or zero-code setup already instrumented it, a second pass
     # would mean two server spans per request.
-    if getattr(app, "_is_instrumented_by_opentelemetry", False):
+    if getattr(app, INSTRUMENTED_MARKER, False):
         return
-    patterns = excluded_paths_to_url_patterns(config.excluded_paths)
     FastAPIInstrumentor.instrument_app(
-        app,
-        excluded_urls=",".join(patterns) or None,
-        exclude_spans=list(EXCLUDED_ASGI_SPANS),
-        tracer_provider=tracer_provider,
+        app, exclude_spans=list(EXCLUDED_ASGI_SPANS), tracer_provider=tracer_provider
     )
+    instrumented_stack = app.build_middleware_stack
+
+    def build_middleware_stack() -> ASGIApp:
+        # FastAPIInstrumentor's stack is ServerErrorMiddleware around
+        # OpenTelemetryMiddleware around the app's own stack. Putting the
+        # exclusion check in OpenTelemetryMiddleware's place lets an excluded
+        # request skip it into that same stack, built once.
+        stack = instrumented_stack()
+        traced = getattr(stack, "app", None)
+        if isinstance(traced, OpenTelemetryMiddleware):
+            stack.app = TracedUnlessExcluded(traced.app, traced, config.excluded_paths)  # type: ignore[attr-defined]
+        else:
+            drop_or_raise(
+                "fastapi_excluded_paths",
+                UnexpectedStackError(f"no OpenTelemetryMiddleware in {type(stack).__name__}"),
+            )
+        return stack
+
+    app.build_middleware_stack = build_middleware_stack  # type: ignore[method-assign]

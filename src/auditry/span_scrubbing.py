@@ -47,8 +47,10 @@ URL_PATH_KEY = "url.path"
 HTTP_METHOD_KEY = "http.request.method"
 # The older semconv name, still emitted by some instrumentations.
 LEGACY_HTTP_METHOD_KEY = "http.method"
-# The method semconv records for a verb outside the known set.
+# The method semconv records for a verb outside the known set, and the span
+# name OpenTelemetry's ASGI middleware gives such a request.
 OTHER_METHOD = "_OTHER"
+UNKNOWN_METHOD_SPAN_NAME = "HTTP"
 
 EXCEPTION_EVENT_NAME = "exception"
 EXCEPTION_TYPE_KEY = "exception.type"
@@ -185,7 +187,7 @@ def set_span_scrub_policy(policy: SpanScrubPolicy | None) -> None:
     """Set the process-wide policy used by exporters built without one
     (``create_middleware`` sets it from ObservabilityConfig). ``None``
     restores the default."""
-    global _policy
+    global _policy  # noqa: PLW0603 -- one process-wide setting, as in logging_config
     _policy = policy or _DEFAULT_POLICY
 
 
@@ -403,7 +405,7 @@ def scrub_span_name(name: str, attributes: Mapping[str, Any], *, is_server: bool
     if is_server:
         method = attributes.get(HTTP_METHOD_KEY) or attributes.get(LEGACY_HTTP_METHOD_KEY)
         if isinstance(method, str) and method:
-            method = "HTTP" if method == OTHER_METHOD else method
+            method = UNKNOWN_METHOD_SPAN_NAME if method == OTHER_METHOD else method
             route = attributes.get(HTTP_ROUTE_KEY)
             name = f"{method} {route}" if isinstance(route, str) and route else method
     return _redact_emails_in_text(name.split("?", 1)[0])

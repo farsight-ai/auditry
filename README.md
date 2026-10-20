@@ -387,7 +387,11 @@ of the spans they export:
 - **Opt-in server spans** for FastAPI and Quart, named by route and honoring
   `excluded_paths`.
 
-Without the extra, all of this is a no-op and the rest of auditry works as before.
+Trace IDs on log lines and trace context propagation turn on whenever the
+OpenTelemetry API (`opentelemetry-api`) is importable, not only with the extra:
+Langfuse, for one, depends on it, so a service using Langfuse gets them inside
+every Langfuse span. Without the API, all of this is a no-op and the rest of
+auditry works as before.
 
 ### Setup
 
@@ -460,6 +464,10 @@ one span:
   included, to its route rule, `GET /files/<name>`.
 
 Paths in `excluded_paths` get no span, and still get the request-ID header.
+Spans and request logging skip exactly the same requests, method-specific
+patterns included: both match the request's path inside the app (without any
+ASGI `root_path`) and its method, never a URL built from the client's `Host`
+header.
 
 ### TracingConfig
 
@@ -574,16 +582,6 @@ there.
 
 ### Limitations
 
-- **FastAPI: method-specific exclusions.** `FastAPIInstrumentor` matches
-  excluded URLs without the method, so only the `"*"` key of a dict-form
-  `excluded_paths` applies to FastAPI spans. Paths excluded for one method only
-  still get spans. Quart decides exclusion from the request path and method,
-  as request logging does.
-- **FastAPI: Host header.** `FastAPIInstrumentor` matches excluded URLs against
-  a URL built from the client's `Host` header. A client that puts `/` in its
-  `Host` value can line a multi-segment, wildcard or prefix pattern up with part
-  of it and leave its own request untraced; the request is still logged. Quart
-  is not affected.
 - **Unrouted requests** (404s, raw ASGI apps) have no route template, so their
   spans keep the raw path, with email addresses redacted.
 - **Client span paths.** Route templating applies only to server spans. The URL

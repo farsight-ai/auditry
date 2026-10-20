@@ -55,6 +55,7 @@ from typing import Any
 
 import structlog
 
+from .correlation import CORRELATION_ID_FIELD
 from .errors import DimensionLimitError, ForbiddenDimensionError, MetricRecordError
 from .logging_config import is_strict
 from .tracing import TRACE_LOG_FIELDS
@@ -120,7 +121,7 @@ _RESERVED_RECORD_KEYS = frozenset(
         "service",
         "version",
         "environment",
-        "correlation_id",
+        CORRELATION_ID_FIELD,
         *TRACE_LOG_FIELDS,
     }
 )

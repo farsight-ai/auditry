@@ -1,6 +1,7 @@
 """Tests for auditry.tracing and the trace fields it adds to logs and metrics."""
 
 import io
+import logging
 import re
 
 import pytest
@@ -58,8 +59,6 @@ class TestLogFields:
         assert SPAN_ID.match(line["span_id"])
 
     def test_foreign_stdlib_records_carry_them_too(self, otel, log_lines):
-        import logging
-
         configure_logging(service="svc")
         with otel.tracer.start_as_current_span("work") as span:
             logging.getLogger("vendor").warning("stdlib line")

@@ -1,7 +1,13 @@
 """Path matching utilities for middleware exclusions."""
 
 import fnmatch
-import re
+from collections.abc import Mapping
+from typing import Any
+
+# The ASGI scope types a request can be excluded from, and the method a
+# websocket scope stands for: it has none of its own, and its handshake is a GET.
+EXCLUDABLE_SCOPE_TYPES = ("http", "websocket")
+WEBSOCKET_HANDSHAKE_METHOD = "GET"
 
 
 def should_exclude_path(
@@ -71,41 +77,28 @@ def _match_path_patterns(path: str, patterns: list[str]) -> bool:
     return False
 
 
-def excluded_paths_to_url_patterns(
-    excluded_paths: list[str] | dict[str, list[str]] | None,
-) -> list[str]:
-    """
-    Translate ``excluded_paths`` into OpenTelemetry ``excluded_urls`` regexes,
-    so FastAPI server spans skip the same paths request logging skips.
+def app_path(scope: Mapping[str, Any]) -> str:
+    """The request's path inside the app: the ASGI path without the
+    ``root_path`` the app is mounted under, as Quart's ``request.path`` and
+    Starlette's routing see it. Never built from the client's Host header,
+    which a client can craft."""
+    # Starlette's rule (starlette._utils.get_route_path): strip root_path only
+    # at a segment boundary, and the root itself is an empty path, which no
+    # pattern matches, as Quart's placeholder for it matches none either.
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    return path[len(root_path) :] if path[len(root_path)] == "/" else path
 
-    OpenTelemetry matches each regex with ``re.search`` against
-    ``scheme://host`` plus the path, with no query and no method. The dict
-    form therefore contributes only its ``"*"`` key: method-specific
-    exclusions cannot be expressed, and those requests still get spans.
 
-    Raises ValueError for a pattern containing ``,``, because
-    ``FastAPIInstrumentor`` takes ``excluded_urls`` as a comma-separated string.
-    """
-    if excluded_paths is None:
-        return []
-    patterns = excluded_paths if isinstance(excluded_paths, list) else excluded_paths.get("*", [])
-    url_patterns = []
-    for pattern in patterns:
-        if "," in pattern:
-            raise ValueError(
-                f"excluded path {pattern!r} contains ',', which OpenTelemetry's "
-                "comma-separated excluded_urls cannot express"
-            )
-        # The same three ways _match_path_patterns matches.
-        alternatives = [re.escape(pattern) + "$"]
-        if "*" in pattern or "?" in pattern:
-            alternatives.append(fnmatch.translate(pattern))
-        if pattern.endswith("/"):
-            alternatives.append(re.escape(pattern))
-        # The host comes from the client's Host header, and the lookahead pins
-        # the match to the first "/" after the scheme. That is the start of the
-        # path unless the Host value itself contains "/", so such a client can
-        # line a multi-segment, wildcard or prefix pattern up with part of its
-        # Host value and leave its own request untraced.
-        url_patterns.append("^[^:/]+://[^/]*(?=/)(?:" + "|".join(alternatives) + ")")
-    return url_patterns
+def should_exclude_scope(
+    scope: Mapping[str, Any], excluded_paths: list[str] | dict[str, list[str]] | None
+) -> bool:
+    """``should_exclude_path`` for an ASGI request, from its path inside the app
+    and its method."""
+    return scope["type"] in EXCLUDABLE_SCOPE_TYPES and should_exclude_path(
+        app_path(scope), scope.get("method", WEBSOCKET_HANDSHAKE_METHOD), excluded_paths
+    )

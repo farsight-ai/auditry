@@ -62,37 +62,19 @@ class QuartRequestAdapter(BaseRequestAdapter):
         """
         Extract user ID from Quart request.
 
-        Checks multiple locations:
+        Checks, in order, and takes a user object's ``id`` before its ``user_id``:
         1. request.current_user (as seen in the matrix-microservice-api example)
         2. g.user (common Quart pattern)
-        3. Direct request attributes
+        3. g.user_id, then request.user_id
         """
-        # Check request.current_user (from the example code)
-        if hasattr(request, "current_user"):
-            user = request.current_user
-            if user:
-                if hasattr(user, "id") and user.id:
-                    return str(user.id)
-                if hasattr(user, "user_id") and user.user_id:
-                    return str(user.user_id)
-
-        # Check g.user (common Quart pattern)
-        if hasattr(g, "user"):
-            user = g.user
-            if user:
-                if hasattr(user, "id") and user.id:
-                    return str(user.id)
-                if hasattr(user, "user_id") and user.user_id:
-                    return str(user.user_id)
-
-        # Check g.user_id directly
-        if hasattr(g, "user_id") and g.user_id:
-            return str(g.user_id)
-
-        # Check request.user_id directly
-        if hasattr(request, "user_id") and request.user_id:
-            return str(request.user_id)
-
+        for user in (getattr(request, "current_user", None), getattr(g, "user", None)):
+            user_id = _id_of(user)
+            if user_id:
+                return user_id
+        for holder in (g, request):
+            user_id = getattr(holder, "user_id", None)
+            if user_id:
+                return str(user_id)
         return None
 
     def clear_cache(self, request: Request) -> None:
@@ -137,38 +119,36 @@ class QuartResponseAdapter(BaseResponseAdapter):
         Handles both Response objects and tuple returns.
         """
         try:
-            # For Response objects
-            if hasattr(response, "response"):
-                # Check if the response is an IterableBody (streaming response)
-                if isinstance(response.response, IterableBody):
-                    # This is a streaming response, return None to avoid consuming it
-                    return None
-
-            # For Response objects with get_data method (non-streaming)
+            # A streaming body would be consumed by reading it.
+            if isinstance(getattr(response, "response", None), IterableBody):
+                return None
             if hasattr(response, "get_data"):
-                # Only call get_data if we're sure it's not streaming
-                # Double-check for streaming response attribute
-                if hasattr(response, "response") and isinstance(response.response, IterableBody):
-                    return None
-
-                # Safe to get data for non-streaming responses
-                data = await response.get_data()
-                if isinstance(data, str):
-                    return data.encode("utf-8")
-                return data
-
-            # For tuple responses (body, status_code, headers)
-            if isinstance(response, tuple) and len(response) >= 1:
-                body = response[0]
-
-                # Convert various body types to bytes
-                if isinstance(body, bytes):
-                    return body
-                elif isinstance(body, str):
-                    return body.encode("utf-8")
-                elif isinstance(body, dict):
-                    return json.dumps(body).encode("utf-8")
-
+                return _as_bytes(await response.get_data())
+            # A tuple response is (body, status_code, headers).
+            if isinstance(response, tuple) and response:
+                return _as_bytes(response[0])
             return None
         except Exception:
             return None
+
+
+def _id_of(user: object) -> str | None:
+    """A user object's ``id``, else its ``user_id``, as a string."""
+    if not user:
+        return None
+    for attribute in ("id", "user_id"):
+        value = getattr(user, attribute, None)
+        if value:
+            return str(value)
+    return None
+
+
+def _as_bytes(body: object) -> bytes | None:
+    """A response body as bytes: text encoded as UTF-8, a dict as JSON."""
+    if isinstance(body, bytes):
+        return body
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    if isinstance(body, dict):
+        return json.dumps(body).encode("utf-8")
+    return None

@@ -9,7 +9,7 @@ from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _set_config_service
 from ..models import ObservabilityConfig
-from ..path_matcher import should_exclude_path
+from ..path_matcher import should_exclude_scope
 from ..propagation import _set_correlation_header
 from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
 from ..tracing import require_otel, set_span_correlation_id
@@ -33,15 +33,14 @@ class FastAPIMiddleware:
 
         set_span_correlation_id(get_correlation_id())
 
-        # Create request to check path
-        request = Request(scope, receive=receive)
-        path = str(request.url.path)
-        method = request.method
-
-        # Handle excluded paths - skip logging
-        if should_exclude_path(path, method, self.config.excluded_paths):
+        # Excluded paths skip logging. Both the decision and the logged path
+        # come from the ASGI scope: request.url is rebuilt from the client's
+        # Host header, which a client can craft.
+        if should_exclude_scope(scope, self.config.excluded_paths):
             await self.app(scope, receive, send)
             return
+        path = scope["path"]
+        method = scope["method"]
 
         # Buffer the request body for logging
         body_chunks = []
@@ -176,7 +175,8 @@ def create_middleware(app, config: ObservabilityConfig):
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)
     if config.tracing.instrument_server:
         require_otel("tracing.instrument_server", "opentelemetry.instrumentation.fastapi")
-        from .tracing import instrument_fastapi
+        # Imported here: .tracing needs the otel extra, which require_otel checked.
+        from .tracing import instrument_fastapi  # noqa: PLC0415
 
         # The instrumentor wraps the whole middleware stack when it is built,
         # so its span is active in both middlewares whatever the call order.
