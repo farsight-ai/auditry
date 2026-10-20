@@ -14,6 +14,7 @@ __all__ = ["instrument_fastapi"]
 
 # FastAPIInstrumentor's private marker on an app it instrumented.
 INSTRUMENTED_MARKER = "_is_instrumented_by_opentelemetry"
+NO_EXCLUDED_URLS = ""
 
 
 class UnexpectedStackError(RuntimeError):
@@ -33,7 +34,13 @@ def instrument_fastapi(
     if getattr(app, INSTRUMENTED_MARKER, False):
         return
     FastAPIInstrumentor.instrument_app(
-        app, exclude_spans=list(EXCLUDED_ASGI_SPANS), tracer_provider=tracer_provider
+        app,
+        # Empty, not None: None falls back to OTEL_PYTHON_FASTAPI_EXCLUDED_URLS
+        # (or OTEL_PYTHON_EXCLUDED_URLS), whose patterns match a URL built from
+        # the client's Host header. TracedUnlessExcluded alone decides.
+        excluded_urls=NO_EXCLUDED_URLS,
+        exclude_spans=list(EXCLUDED_ASGI_SPANS),
+        tracer_provider=tracer_provider,
     )
     instrumented_stack = app.build_middleware_stack
 

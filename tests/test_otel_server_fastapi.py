@@ -289,6 +289,58 @@ DUP_MODE_SCRIPT = textwrap.dedent(
 )
 
 
+HOST_SPAN_SCRIPT = textwrap.dedent(
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from auditry import ObservabilityConfig
+    from auditry.fastapi import create_middleware
+
+    exported = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exported))
+    trace.set_tracer_provider(provider)
+
+    app = FastAPI()
+
+    @app.get("/files/{name}")
+    async def get_file(name: str):
+        return {"ok": True}
+
+    config = ObservabilityConfig(
+        service_name="svc",
+        log_request_body=False,
+        log_response_body=False,
+        tracing={"instrument_server": True},
+    )
+    TestClient(create_middleware(app, config)).get("%s", headers={"Host": "health"})
+    print(sum(span.kind.name == "SERVER" for span in exported.get_finished_spans()))
+    """
+)
+
+
+@pytest.mark.parametrize(
+    "variable", ["OTEL_PYTHON_FASTAPI_EXCLUDED_URLS", "OTEL_PYTHON_EXCLUDED_URLS"]
+)
+def test_otel_excluded_urls_variables_cannot_hide_a_request(variable):
+    """OpenTelemetry matches these against a URL built from the Host header,
+    and reads them once, at import, so the check runs in its own process."""
+    result = subprocess.run(
+        [sys.executable, "-c", HOST_SPAN_SCRIPT % FILE_URL],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, variable: "/health"},
+        timeout=25,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "1"
+
+
 def test_http_dup_semconv_mode():
     result = subprocess.run(
         [sys.executable, "-c", DUP_MODE_SCRIPT % FILE_URL],

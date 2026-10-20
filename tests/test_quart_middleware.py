@@ -89,6 +89,58 @@ async def test_http_errors_keep_their_status(log_lines, path, status):
     assert line["message"].startswith(f"Request completed: GET {path} - Status: {status}")
 
 
+def catch_all_app():
+    """An app whose own errorhandler(Exception) turns every error into a JSON 500."""
+    app = create_middleware(Quart(__name__), quiet_config())
+
+    @app.errorhandler(Exception)
+    async def envelope(error):
+        return {"error": "internal"}, 500
+
+    @app.route("/boom")
+    async def boom():
+        raise ValueError("customer text")
+
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_an_error_the_apps_catch_all_handles_is_logged_as_a_failure(log_lines):
+    configure_logging(service="svc", environment="prod")
+    await catch_all_app().test_client().get("/boom")
+    (line,) = auditry_lines(log_lines)
+    assert (line["message"].split(" - ")[0], line["error_type"]) == (
+        "Request failed: GET /boom",
+        "ValueError",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_apps_catch_all_still_builds_the_response():
+    response = await catch_all_app().test_client().get("/boom")
+    assert (response.status_code, await response.get_json()) == (500, {"error": "internal"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_an_error_a_handler_turns_into_another_status_is_a_completed_request(log_lines):
+    configure_logging(service="svc", environment="prod")
+    app = create_middleware(Quart(__name__), quiet_config())
+
+    @app.errorhandler(ValueError)
+    async def teapot(error):
+        return {"handled": True}, 418
+
+    @app.route("/value")
+    async def raises_value():
+        raise ValueError("x")
+
+    await app.test_client().get("/value")
+    (line,) = auditry_lines(log_lines)
+    assert line["message"].startswith("Request completed: GET /value - Status: 418")
+
+
 @pytest.mark.asyncio
 async def test_app_error_handlers_still_run():
     app = create_middleware(Quart(__name__), quiet_config())

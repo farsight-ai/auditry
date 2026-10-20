@@ -69,6 +69,15 @@ _sqs_attached: "ContextVar[tuple[Context, Context] | None]" = ContextVar(
 )
 SQS_ATTRIBUTE_NAME = CORRELATION_ID_FIELD
 
+# The message-attribute shape boto3 sends and receives, and the camelCase keys
+# the same data has in a Lambda event record.
+MESSAGE_ATTRIBUTES_KEY = "MessageAttributes"
+STRING_VALUE_KEY = "StringValue"
+DATA_TYPE_KEY = "DataType"
+STRING_DATA_TYPE = "String"
+LAMBDA_MESSAGE_ATTRIBUTES_KEY = "messageAttributes"
+LAMBDA_STRING_VALUE_KEY = "stringValue"
+
 # W3C Trace Context fields, used verbatim as header and message-attribute
 # names (the same names OTel's botocore/boto3sqs instrumentations use).
 TRACE_CONTEXT_FIELDS = ("traceparent", "tracestate")
@@ -159,6 +168,8 @@ def ensure_correlation_id() -> str:
 def outbound_headers(
     header_name: str | None = None,
     extra: dict[str, str] | None = None,
+    *,
+    trace_context: bool = True,
 ) -> dict[str, str]:
     """
     Headers for an outbound HTTP call, carrying the correlation ID.
@@ -178,11 +189,14 @@ def outbound_headers(
     Inside a valid span, with the OpenTelemetry API importable (see the
     module docstring), also carries ``traceparent`` and, when non-empty,
     ``tracestate``, so the downstream service continues the trace. A third
-    party receives them too. ``baggage`` is never sent. A trace header
-    already in ``extra`` (any letter case) is kept as given.
+    party receives them too; ``trace_context=False`` leaves them out.
+    ``baggage`` is never sent. A trace header already in ``extra`` (any
+    letter case) is kept as given.
     """
     headers = dict(extra) if extra else {}
     headers[header_name or correlation_header_name()] = ensure_correlation_id()
+    if not trace_context:
+        return headers
     present = {name.lower() for name in headers}
     for name, value in _trace_carrier().items():
         if name not in present:
@@ -230,7 +244,7 @@ def sqs_message_attributes(
 
 
 def _string_attribute(value: str) -> dict[str, str]:
-    return {"DataType": "String", "StringValue": value}
+    return {DATA_TYPE_KEY: STRING_DATA_TYPE, STRING_VALUE_KEY: value}
 
 
 def _trace_carrier() -> dict[str, str]:
@@ -244,9 +258,9 @@ def _message_attribute(message: Mapping[str, Any], name: str) -> str | None:
     """A string attribute of a received message: ``MessageAttributes`` /
     ``StringValue`` from a boto3 receive, or ``messageAttributes`` /
     ``stringValue`` from a Lambda event record."""
-    attrs = message.get("MessageAttributes") or message.get("messageAttributes") or {}
+    attrs = message.get(MESSAGE_ATTRIBUTES_KEY) or message.get(LAMBDA_MESSAGE_ATTRIBUTES_KEY) or {}
     attr = attrs.get(name) or {}
-    return attr.get("StringValue") or attr.get("stringValue")
+    return attr.get(STRING_VALUE_KEY) or attr.get(LAMBDA_STRING_VALUE_KEY)
 
 
 def extract_correlation_id(message: dict[str, Any]) -> str | None:

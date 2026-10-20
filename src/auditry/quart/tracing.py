@@ -1,18 +1,17 @@
 """Opt-in OpenTelemetry server spans for Quart. Requires the ``otel`` extra.
 
 There is no official Quart instrumentation, so this wraps the ASGI app in
-OpenTelemetry's generic ASGI middleware and names each span by its route.
+OpenTelemetry's generic ASGI middleware. QuartMiddleware names each span by
+its route, here or in a service's own instrumentation.
 """
 
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
-from opentelemetry.trace import TracerProvider, get_current_span
-from quart import Quart, has_websocket_context, request, websocket
+from opentelemetry.trace import TracerProvider
+from quart import Quart
 
 from ..models import ObservabilityConfig
 from ..otel.asgi import TracedUnlessExcluded
-from ..span_scrubbing import HTTP_ROUTE_KEY
-from ..tracing import EXCLUDED_ASGI_SPANS, drop_or_raise
-from .middleware import CONNECTION_STARTED_SIGNALS
+from ..tracing import EXCLUDED_ASGI_SPANS
 
 __all__ = ["instrument_quart"]
 
@@ -37,8 +36,6 @@ def instrument_quart(
     app.asgi_app = TracedUnlessExcluded(  # type: ignore[assignment]
         app.asgi_app, traced, config.excluded_paths
     )
-    for signal in CONNECTION_STARTED_SIGNALS:
-        signal.connect(_name_span_by_route, sender=app)
 
 
 def _already_traced(asgi_app: object) -> bool:
@@ -54,17 +51,3 @@ def _already_traced(asgi_app: object) -> bool:
         seen.add(id(layer))
         layer = getattr(layer, "app", None)
     return False
-
-
-async def _name_span_by_route(sender: Quart, **extra: object) -> None:
-    """The generic ASGI middleware names spans by raw path; the route rule
-    is known once Quart has matched the request or websocket."""
-    try:
-        connection = websocket if has_websocket_context() else request
-        rule = connection.url_rule
-        span = get_current_span()
-        if rule is not None and span.is_recording():
-            span.update_name(f"{connection.method} {rule.rule}")
-            span.set_attribute(HTTP_ROUTE_KEY, rule.rule)
-    except Exception as exc:
-        drop_or_raise("quart_span_name", exc)

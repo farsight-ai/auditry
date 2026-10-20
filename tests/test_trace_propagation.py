@@ -47,6 +47,11 @@ class TestOutboundHeaders:
         assert headers["traceparent"] == traceparent_of(span)
         assert "X-Request-ID" in headers
 
+    def test_without_trace_context_carries_only_the_correlation_id(self, otel):
+        with otel.tracer.start_as_current_span("call"):
+            headers = outbound_headers(trace_context=False)
+        assert list(headers) == ["X-Request-ID"]
+
     def test_outside_a_span_carries_no_trace_headers(self):
         headers = outbound_headers()
         assert set(headers) == {"X-Request-ID"}

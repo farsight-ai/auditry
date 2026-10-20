@@ -25,7 +25,8 @@ OpenTelemetry API is importable, as it is wherever Langfuse is installed.
   including foreign stdlib records and EMF metric records. Optional fields:
   absent outside a span and without the extra.
 - W3C trace context propagation. `outbound_headers()` adds `traceparent` /
-  `tracestate` inside a span (a trace header already in `extra` is kept);
+  `tracestate` inside a span (a trace header already in `extra` is kept;
+  `trace_context=False` leaves them out, for a third party);
   `sqs_message_attributes()` adds them as message attributes within the SQS
   limit of 10, warning once (`MessageAttributeLimitError` in strict mode) when
   they do not fit. W3C Trace Context only, whatever `OTEL_PROPAGATORS` says;
@@ -53,8 +54,10 @@ OpenTelemetry API is importable, as it is wherever Langfuse is installed.
   (`FastAPIInstrumentor`) and Quart (OpenTelemetry's ASGI middleware, spans
   renamed to the route rule), skipping exactly the requests request logging
   skips: `excluded_paths` matched against the path inside the app and the
-  method, method-specific patterns included. An app that is already
-  instrumented is left alone.
+  method, method-specific patterns included; `OTEL_PYTHON_FASTAPI_EXCLUDED_URLS`
+  and `OTEL_PYTHON_EXCLUDED_URLS` are ignored, since they match a URL built
+  from the client's `Host` header. An app that is already instrumented is left
+  alone, wherever its instrumentation sits among the ASGI wrappers.
 - CI runs the test suite on Python 3.11 and 3.12. The check names become
   `pytest (3.11)` and `pytest (3.12)`.
 
@@ -74,7 +77,10 @@ OpenTelemetry API is importable, as it is wherever Langfuse is installed.
   as it would without auditry. What changes in the logs: an HTTP error is a
   `Request completed` line with its real status rather than two
   `Request failed` lines, and an unhandled exception is one `Request failed`
-  line rather than two. Log-derived error counts drop; check alarms on them.
+  line rather than two. An exception the app's own handler turns into a 5XX
+  response, such as a catch-all `errorhandler(Exception)`, is also one
+  `Request failed` line, as on FastAPI; one turned into another status is a
+  `Request completed` line. Log-derived error counts drop; check alarms on them.
 - `auditry.__version__` reported 0.4.0 in the 0.5.0 release; it now matches the
   package version.
 

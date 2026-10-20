@@ -186,6 +186,19 @@ class TestServerSpans:
         await app.test_client().get(FILE_URL)
         assert len(otel.raw_spans()) == 1
 
+    @pytest.mark.parametrize("instrument_server", [False, True])
+    async def test_self_instrumented_app_exports_the_route_not_the_path(
+        self, otel, instrument_server
+    ):
+        app = add_routes(quart.Quart(__name__))
+        app.asgi_app = asgi.OpenTelemetryMiddleware(
+            app.asgi_app, exclude_spans=["receive", "send"], tracer_provider=otel.provider
+        )
+        config = make_config(instrument_server=instrument_server)
+        await auditry_quart.create_middleware(app, config).test_client().get(FILE_URL)
+        (span,) = otel.scrubbed_server_spans()
+        assert span.attributes["http.target"] == "/files/<name>"
+
     async def test_instrument_server_off_creates_no_spans(self, otel):
         app = auditry_quart.create_middleware(
             add_routes(quart.Quart(__name__)), make_config(instrument_server=False)
@@ -196,11 +209,13 @@ class TestServerSpans:
 
 class TestSpanNamingFailure:
     @pytest.fixture(autouse=True)
-    def broken_current_span(self, monkeypatch):
-        def explode():
+    def broken_span_renaming(self, monkeypatch):
+        sdk_trace = pytest.importorskip("opentelemetry.sdk.trace")
+
+        def explode(span, name):
             raise RuntimeError("detail that must not be logged")
 
-        monkeypatch.setattr(quart_tracing, "get_current_span", explode)
+        monkeypatch.setattr(sdk_trace.Span, "update_name", explode)
 
     async def test_production_keeps_serving(self, otel):
         configure_logging(service="svc", environment="prod")
@@ -211,7 +226,7 @@ class TestSpanNamingFailure:
         configure_logging(service="svc", environment="prod")
         await traced_app().test_client().get(FILE_URL)
         (warning,) = [line for line in log_lines() if line["message"] == "tracing signal dropped"]
-        assert warning["operation"] == "quart_span_name"
+        assert warning["operation"] == "set_span_route"
 
 
 class TestScrubbing:

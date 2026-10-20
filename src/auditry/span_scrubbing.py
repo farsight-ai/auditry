@@ -56,6 +56,12 @@ LEGACY_HTTP_METHOD_KEY = "http.method"
 OTHER_METHOD = "_OTHER"
 UNKNOWN_METHOD_SPAN_NAME = "HTTP"
 
+# The redaction marker's punctuation, which urlencode would otherwise
+# percent-encode, so a redacted query value reads as the marker in an exported URL.
+REDACTED_MARKER_PUNCTUATION = "".join(sorted({c for c in REDACTED_VALUE if not c.isalnum()}))
+# Distinct pattern sets whose redactor is kept: one per span scrub policy in use.
+REDACTOR_CACHE_SIZE = 32
+
 EXCEPTION_EVENT_NAME = "exception"
 EXCEPTION_TYPE_KEY = "exception.type"
 EXCEPTION_DETAIL_KEYS = frozenset({"exception.message", "exception.stacktrace"})
@@ -184,7 +190,7 @@ class SpanScrubPolicy:
         return _redactor(self.redaction_patterns)
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=REDACTOR_CACHE_SIZE)
 def _redactor(patterns: tuple[str, ...]) -> SensitiveDataRedactor:
     return SensitiveDataRedactor(list(patterns))
 
@@ -253,7 +259,7 @@ def scrub_query(query: str, policy: SpanScrubPolicy) -> str:
             )
             for key, value in pairs
         ],
-        safe="[]",
+        safe=REDACTED_MARKER_PUNCTUATION,
     )
 
 

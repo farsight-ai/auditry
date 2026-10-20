@@ -280,8 +280,8 @@ sending, and `header_name=` to override the name for one call. Attach these to
 third-party API calls too, wherever the SDK accepts custom headers — it makes
 the vendor's audit trail line up with yours. Inside a span they also carry
 `traceparent` and `tracestate`, so the vendor receives your trace and span IDs
-(random, no request content); to send only the correlation ID, pass
-`{"X-Request-ID": get_correlation_id()}` instead.
+(random, no request content); `outbound_headers(trace_context=False)` sends
+only the correlation ID.
 
 ## Correlation Propagation Beyond HTTP
 
@@ -442,6 +442,7 @@ OTEL_TRACES_EXPORTER=auditry_otlp \
 OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318 \
 OTEL_LOGS_EXPORTER=none \
 OTEL_METRICS_EXPORTER=none \
+OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=fastapi \
 opentelemetry-instrument uvicorn app:app
 ```
 
@@ -451,12 +452,18 @@ without it auto-initialization fails, so the service runs with no spans.
 
 `auditry_otlp` is OTLP over HTTP, configured by the usual `OTEL_EXPORTER_OTLP_*`
 variables. `auditry_console` prints scrubbed spans to stdout for local
-development. Zero-code setup already instruments FastAPI, so leave
-`instrument_server` off there (auditry also detects an instrumented app and
-does not add a second server span). Those spans follow the instrumentor's own
-settings rather than `TracingConfig` and `excluded_paths`: set
-`OTEL_PYTHON_FASTAPI_EXCLUDED_URLS` to keep health probes out. Scrubbing and
-the `correlation_id` attribute apply either way.
+development.
+
+For a FastAPI service, `OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=fastapi` turns off
+the instrumentor zero-code setup would apply, so set `instrument_server=True`
+and auditry creates the server spans instead, skipping `excluded_paths` exactly
+as request logging does. auditry's spans ignore `OTEL_PYTHON_FASTAPI_EXCLUDED_URLS`
+and `OTEL_PYTHON_EXCLUDED_URLS`, and the instrumentor's should not rely on them:
+they search for each pattern anywhere in a URL built from the client's `Host`
+header, so a request sent with `Host: health` matches `/health` and gets no
+span, whatever its path. If zero-code setup does instrument FastAPI, auditry
+detects it and does not add a second server span. Scrubbing and the
+`correlation_id` attribute apply either way.
 
 **Server spans.** `tracing.instrument_server=True` starts one server span per
 request, without per-`receive`/`send` child spans, so a streaming response is
@@ -495,7 +502,7 @@ and captured header names.
 | Format | 32 hex characters | 32 hex characters. They look identical, so never put one in the other's field. |
 | Header | `X-Request-ID` (configurable) | `traceparent: 00-<trace_id>-<parent span_id>-<flags>`, plus `tracestate` |
 | Returned to the client | Yes, in the response header | No |
-| Inbound trust | Any caller's valid UUID4 is accepted | Any caller's `traceparent` is accepted, and its sampled flag forces sampling under the default sampler |
+| Inbound trust | Any caller's valid UUID4 is accepted | Any caller's `traceparent` is accepted, and under the default sampler its sampled flag forces or suppresses the span; see [Operator Guidance](#operator-guidance) |
 | Present when | A middleware or propagation helper bound it | An SDK and instrumentation are installed. Unsampled requests still log a `trace_id`, but the backend has no trace for it. |
 | Used for | Searching logs, support tickets | Opening the latency tree in the trace backend |
 
@@ -576,8 +583,14 @@ there.
   arguments.
 - Header capture (`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*`) is opt-in;
   sensitive header values are still redacted when it is on.
-- On public endpoints, an inbound `traceparent` with the sampled flag forces
-  sampling under the default sampler. Consider a rate-limited sampler there.
+- On public endpoints, any caller's `traceparent` is trusted. Under the
+  default sampler (`parentbased_always_on`) its sampled flag decides whether
+  the request gets a span at all: set, it forces one; cleared, it suppresses
+  it. Its trace ID becomes the `trace_id` on the request's log lines either
+  way. Strip `traceparent` and `tracestate` at the edge (load balancer or
+  gateway) for outside callers. `OTEL_TRACES_SAMPLER=always_on` alone keeps
+  every span but still logs the caller's trace ID; a ratio sampler decides
+  from that same caller-chosen ID.
 - With Langfuse, set up the tracer provider before constructing `Langfuse()`.
   When Langfuse runs first, it registers its own global provider, a later
   `trace.set_tracer_provider()` is ignored with only a warning, and auditry's

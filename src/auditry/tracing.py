@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 import structlog
 
 from .correlation import CORRELATION_ID_FIELD
+from .span_scrubbing import HTTP_ROUTE_KEY
 
 try:
     from opentelemetry import context as otel_context
@@ -44,6 +45,7 @@ __all__ = [
     "attach_context",
     "detach_context",
     "set_span_correlation_id",
+    "set_span_route",
     "require_otel",
 ]
 
@@ -182,6 +184,18 @@ def set_span_correlation_id(value: str | None) -> None:
     span = otel_trace.get_current_span()
     if span.is_recording():
         span.set_attribute(CORRELATION_ID_ATTRIBUTE, value)
+
+
+@_never_raises
+def set_span_route(method: str, route: str) -> None:
+    """Name the current span ``METHOD route`` and record the route, if it is
+    recording, so its raw path is exported as the route template."""
+    if otel_trace is None:
+        return
+    span = otel_trace.get_current_span()
+    if span.is_recording():
+        span.update_name(f"{method} {route}")
+        span.set_attribute(HTTP_ROUTE_KEY, route)
 
 
 def _importable(module: str) -> bool:

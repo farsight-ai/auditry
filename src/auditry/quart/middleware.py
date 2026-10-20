@@ -1,11 +1,21 @@
 """Quart observability middleware."""
 
 import time
+from typing import Any
 
 from asgi_correlation_id import CorrelationIdMiddleware
-from quart import Quart, Request, Response, request
+from quart import (
+    Quart,
+    Request,
+    Response,
+    has_request_context,
+    has_websocket_context,
+    request,
+    websocket,
+)
 from quart.signals import got_request_exception, request_started, websocket_started
 from quart.wrappers.response import IterableBody
+from werkzeug.exceptions import HTTPException
 
 from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
@@ -14,13 +24,15 @@ from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
 from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
-from ..tracing import require_otel, set_span_correlation_id
+from ..tracing import require_otel, set_span_correlation_id, set_span_route
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
 
 # Sent for each request or websocket before any before_request /
 # before_websocket hook runs, so an app hook that returns a response or
 # aborts cannot skip a receiver. Both are process-wide: connect with sender=.
 CONNECTION_STARTED_SIGNALS = (request_started, websocket_started)
+# The lowest status that makes a handled exception a failed request.
+SERVER_ERROR_STATUS = 500
 
 
 class QuartMiddleware(BaseMiddleware):
@@ -51,6 +63,7 @@ class QuartMiddleware(BaseMiddleware):
 
         for signal in CONNECTION_STARTED_SIGNALS:
             signal.connect(_record_span_correlation_id, sender=self.app)
+            signal.connect(_name_span_by_route, sender=self.app)
 
         @self.app.before_request
         async def capture_request_start():
@@ -149,18 +162,12 @@ class QuartMiddleware(BaseMiddleware):
 
             return response
 
-        async def log_request_exception(
-            sender: Quart, exception: Exception, **extra: object
-        ) -> None:
-            """Log an unhandled exception with request context.
-
-            A signal receiver rather than an error handler, so Quart still
-            builds the response: HTTP errors (404, abort(403)) keep their
-            status and are logged by after_request like any response, and
-            the app's own error handlers still run.
-            """
-            # Check if this path was excluded
-            if getattr(request, "observability_excluded", False):
+        async def log_failure(exception: Exception) -> None:
+            """Log a request that failed with ``exception``, once."""
+            # Excluded, or already logged as a failure.
+            if getattr(request, "observability_excluded", False) or getattr(
+                request, "observability_error_logged", False
+            ):
                 return
 
             # Check if we have request data
@@ -187,9 +194,38 @@ class QuartMiddleware(BaseMiddleware):
             # Clear cache
             self.request_adapter.clear_cache(request)
 
+        async def log_request_exception(
+            sender: Quart, exception: Exception, **extra: object
+        ) -> None:
+            """Log an exception no error handler took.
+
+            A signal receiver rather than an error handler, so Quart still
+            builds the response: HTTP errors (404, abort(403)) keep their
+            status and are logged by after_request like any response, and
+            the app's own error handlers still run.
+            """
+            await log_failure(exception)
+
         # The signal is process-wide: sender= limits it to this app's
         # requests. weak=False because nothing else references the closure.
         got_request_exception.connect(log_request_exception, sender=self.app, weak=False)
+
+        handle_user_exception = self.app.handle_user_exception
+
+        async def log_handled_failure(error: Exception) -> Any:
+            """Quart sends got_request_exception only for errors no handler
+            takes. An error the app's own handler turns into a 5XX response,
+            such as a catch-all errorhandler(Exception), is a failure too, as
+            it is on FastAPI; one turned into another status is a response."""
+            result = await handle_user_exception(error)
+            if not has_request_context() or isinstance(error, HTTPException):
+                return result
+            response = await self.app.make_response(result)
+            if response.status_code >= SERVER_ERROR_STATUS:
+                await log_failure(error)
+            return response
+
+        self.app.handle_user_exception = log_handled_failure  # type: ignore[method-assign]
 
     async def process_request(self, request: Request, call_next) -> Response:
         """
@@ -216,6 +252,15 @@ class QuartMiddleware(BaseMiddleware):
 
 async def _record_span_correlation_id(sender: Quart, **extra: object) -> None:
     set_span_correlation_id(get_correlation_id())
+
+
+async def _name_span_by_route(sender: Quart, **extra: object) -> None:
+    """OpenTelemetry's ASGI middleware, auditry's or the service's own, names
+    spans by raw path; the route rule is known once Quart has matched the
+    request or websocket."""
+    connection = websocket if has_websocket_context() else request
+    if connection.url_rule is not None:
+        set_span_route(connection.method, connection.url_rule.rule)
 
 
 def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
