@@ -1,6 +1,8 @@
 # auditry
 
-A clean, framework-agnostic observability middleware for FastAPI and Quart that provides comprehensive request/response logging, correlation ID tracking, business event extraction, and sensitive data redaction.
+A clean, framework-agnostic observability middleware for FastAPI and Quart that
+provides comprehensive request/response logging, correlation ID tracking,
+business event extraction, and sensitive data redaction.
 
 [![PyPI version](https://badge.fury.io/py/auditry.svg)](https://badge.fury.io/py/auditry)
 [![Python Versions](https://img.shields.io/pypi/pyversions/auditry.svg)](https://pypi.org/project/auditry/)
@@ -17,6 +19,7 @@ A clean, framework-agnostic observability middleware for FastAPI and Quart that 
   - [Setup](#setup)
   - [TracingConfig](#tracingconfig)
   - [correlation_id vs trace_id](#correlation_id-vs-trace_id)
+  - [SQS and SNS](#sqs-and-sns)
   - [What Gets Scrubbed](#what-gets-scrubbed)
   - [Operator Guidance](#operator-guidance)
   - [Limitations](#limitations)
@@ -44,19 +47,19 @@ Requires Python 3.11 or later.
 ### For FastAPI
 
 ```bash
-pip install auditry[fastapi]
+pip install 'auditry[fastapi]'
 ```
 
 ### For Quart
 
 ```bash
-pip install auditry[quart]
+pip install 'auditry[quart]'
 ```
 
 ### For tracing (OpenTelemetry)
 
 ```bash
-pip install auditry[otel]
+pip install 'auditry[otel]'
 ```
 
 See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
@@ -64,7 +67,7 @@ See [Tracing (OpenTelemetry)](#tracing-opentelemetry).
 ### For everything
 
 ```bash
-pip install auditry[all]
+pip install 'auditry[all]'
 ```
 
 ## Quick Start
@@ -155,7 +158,8 @@ config = ObservabilityConfig(
 )
 ```
 
-**Note:** The `service_name` is required and must be provided. This ensures all services have meaningful names in logs rather than generic defaults.
+**Note:** The `service_name` is required and must be provided. This ensures all
+services have meaningful names in logs rather than generic defaults.
 
 ### Full Configuration Options
 
@@ -272,9 +276,9 @@ async def proxy_request():
 The header name defaults to your configured `correlation_id_header` (seeded when
 `create_middleware` runs), so a service that customizes the inbound header sends
 the same name outbound. Pass `extra=` to merge with headers you were already
-sending, and `header_name=` to override the name for one call. Attach these to third-party API
-calls too, wherever the SDK accepts custom headers — it makes the vendor's
-audit trail line up with yours.
+sending, and `header_name=` to override the name for one call. Attach these to
+third-party API calls too, wherever the SDK accepts custom headers — it makes
+the vendor's audit trail line up with yours.
 
 ## Correlation Propagation Beyond HTTP
 
@@ -359,8 +363,9 @@ callers into systems that assume opacity.
 
 ## Tracing (OpenTelemetry)
 
-With the `otel` extra (`pip install auditry[otel]`), auditry ties OpenTelemetry
-traces to its JSON logs and keeps sensitive data out of them:
+With the `otel` extra (`pip install 'auditry[otel]'`), auditry ties
+OpenTelemetry traces to its JSON logs, and its exporters keep sensitive data out
+of the spans they export:
 
 - **Log fields.** Every log line written inside a valid span context carries
   `trace_id` and `span_id` (lowercase hex), so a log line opens its trace.
@@ -372,10 +377,12 @@ traces to its JSON logs and keeps sensitive data out of them:
 - **`correlation_id` on server spans.** The middleware records the request's
   correlation ID as the span attribute `correlation_id`, on spans from auditry's
   own server instrumentation or from yours.
-- **Scrubbing.** `ScrubbingSpanExporter` wraps your exporter and removes
-  credentials, PII, customer content, exception messages and stack traces from
-  every span before export, whichever instrumentation created it. See
-  [What Gets Scrubbed](#what-gets-scrubbed).
+- **Scrubbing.** `ScrubbingSpanExporter` wraps your exporter and, before
+  export, removes credentials, PII, exception messages, stack traces and the
+  customer content its rules recognize, whichever instrumentation created the
+  span. Only spans exported through it are scrubbed: installing the extra does
+  not wrap an exporter for you. See [What Gets Scrubbed](#what-gets-scrubbed)
+  and [Limitations](#limitations).
 - **Opt-in server spans** for FastAPI and Quart, named by route and honoring
   `excluded_paths`.
 
@@ -386,6 +393,7 @@ Without the extra, all of this is a no-op and the rest of auditry works as befor
 auditry does not create a `TracerProvider`; set one up and wrap its exporter:
 
 ```python
+from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -400,6 +408,7 @@ provider = TracerProvider(resource=Resource.create({"service.name": "my-service"
 provider.add_span_processor(BatchSpanProcessor(ScrubbingSpanExporter(OTLPSpanExporter())))
 trace.set_tracer_provider(provider)
 
+app = FastAPI()
 app = create_middleware(
     app,
     ObservabilityConfig(
@@ -449,7 +458,7 @@ Paths in `excluded_paths` get no span, and still get the request-ID header.
 ### TracingConfig
 
 | Field | Default | Effect |
-|---|---|---|
+| --- | --- | --- |
 | `instrument_server` | `False` | Start a server span per request (see above). Leave off when the service instruments itself. |
 | `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern. |
 | `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string (including PostgreSQL dollar-quoted) and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
@@ -461,7 +470,7 @@ and captured header names.
 ### correlation_id vs trace_id
 
 | | `correlation_id` | `trace_id` |
-|---|---|---|
+| --- | --- | --- |
 | Identifies | One request chain, as a single flat ID | One trace: a tree of timed spans. `span_id` on a log line says which operation wrote it. |
 | Created by | `asgi-correlation-id`, when the inbound header is missing or not a valid UUID4 | The OTel SDK, when there is no valid inbound `traceparent` |
 | Randomness | `uuid4()`, from `os.urandom` | `random.getrandbits(128)`, not cryptographic. Never use it as a secret. |
@@ -503,13 +512,16 @@ you pass in `existing` are never overwritten.
 
 ### What Gets Scrubbed
 
-Traces are a general-access destination. Only system-generated operational
-values (timings, status codes, route templates, random IDs, error types)
-survive. The exporter applies these rules to span, event and link attributes;
-resource attributes are not touched.
+Traces are a general-access destination, so the rules aim to let only
+system-generated operational values (timings, status codes, route templates,
+random IDs, error types) survive. They work from attribute names and value
+shapes, so content they cannot recognize, such as a file name in a client
+span's URL path, is exported (see [Limitations](#limitations)). The exporter
+applies these rules to span, event and link attributes; resource attributes are
+not touched.
 
 | Rule | What happens |
-|---|---|
+| --- | --- |
 | Exception events | `exception.message` and `exception.stacktrace` are removed; `exception.type` and `exception.escaped` stay. |
 | Status description | Replaced by the exception type of the first exception event, or removed. The status code stays. |
 | User identity | Every `enduser.*` and `user.*` attribute is removed (`user_agent.*` stays). |
@@ -554,11 +566,23 @@ there.
 
 ### Limitations
 
-- **Method-specific exclusions.** OpenTelemetry matches excluded URLs without
-  the method, so only the `"*"` key of a dict-form `excluded_paths` applies to
-  spans. Paths excluded for one method only still get spans.
+- **FastAPI: method-specific exclusions.** `FastAPIInstrumentor` matches
+  excluded URLs without the method, so only the `"*"` key of a dict-form
+  `excluded_paths` applies to FastAPI spans. Paths excluded for one method only
+  still get spans. Quart decides exclusion from the request path and method,
+  as request logging does.
+- **FastAPI: Host header.** `FastAPIInstrumentor` matches excluded URLs against
+  a URL built from the client's `Host` header. A client that puts `/` in its
+  `Host` value can line a multi-segment, wildcard or prefix pattern up with part
+  of it and leave its own request untraced; the request is still logged. Quart
+  is not affected.
 - **Unrouted requests** (404s, raw ASGI apps) have no route template, so their
   spans keep the raw path, with email addresses redacted.
+- **Client span paths.** Route templating applies only to server spans. The URL
+  path of a client or other non-server span is exported unchanged apart from
+  email addresses, so an outbound path that carries a file name or customer
+  identifier (an S3 object key, a vendor API resource ID) reaches the trace
+  backend. Query values are still redacted.
 - **Exception detail** is available only through `set_trace_handler`, never on
   spans.
 - **Scrubbing covers only spans exported through auditry's exporters.** A
@@ -594,8 +618,8 @@ schema (`timestamp`, `service`, `version`, `environment`) **and the
 `correlation_id`** of the request that produced it. CloudWatch ignores the extra
 keys when extracting the metric; you get to tie a latency spike back to the
 exact request in Logs Insights. Inside an OpenTelemetry span, the record also
-carries `trace_id` and `span_id`. The metrics logger's level is pinned to INFO, so
-a `WARNING` root level can't silently discard metrics. If logging was never
+carries `trace_id` and `span_id`. The metrics logger's level is pinned to INFO,
+so a `WARNING` root level can't silently discard metrics. If logging was never
 configured (a script, a bare test), records fall back to a raw single-line write
 on stdout — EMF extraction never depends on logging setup.
 
@@ -760,7 +784,8 @@ valid and records the metrics without dimensions.
 
 ## User Tracking
 
-The middleware automatically extracts user IDs from your authentication system and includes them in logs.
+The middleware automatically extracts user IDs from your authentication system
+and includes them in logs.
 
 ### FastAPI User Tracking
 
@@ -800,16 +825,19 @@ async def authenticate():
 ```
 
 The middleware automatically finds the user ID from these locations:
+
 - **FastAPI**: `request.state.user_id` or `request.state.user.id`
 - **Quart**: `request.current_user.id`, `g.user.id`, or `g.user_id`
 
 ## Business Event Tagging (For Analytics)
 
-Tag specific endpoints as "business events" to make analytics queries easier for your sales/product teams.
+Tag specific endpoints as "business events" to make analytics queries easier for
+your sales/product teams.
 
 ### Configuration
 
-Tag endpoints in your middleware config - zero code changes needed in your actual endpoints:
+Tag endpoints in your middleware config - zero code changes needed in your
+actual endpoints:
 
 ```python
 from auditry import ObservabilityConfig, BusinessEventConfig
@@ -839,6 +867,7 @@ app = create_middleware(app, config)
 ### Log Output with Event Tags
 
 Regular log (no tagging):
+
 ```json
 {
   "service": "my-service-name",
@@ -849,6 +878,7 @@ Regular log (no tagging):
 ```
 
 Tagged business event log:
+
 ```json
 {
   "service": "my-service-name",
@@ -934,7 +964,8 @@ config = ObservabilityConfig(
 
 ### Disabling Body Logging (Application-Wide)
 
-For applications handling sensitive data, you can disable logging of request and/or response bodies across the entire application:
+For applications handling sensitive data, you can disable logging of request
+and/or response bodies across the entire application:
 
 ```python
 config = ObservabilityConfig(
@@ -948,7 +979,9 @@ config = ObservabilityConfig(
 )
 ```
 
-When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead of the actual content, while still logging metadata like headers, status codes, and timing information.
+When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead
+of the actual content, while still logging metadata like headers, status codes,
+and timing information.
 
 Set both flags explicitly. Bodies are user-supplied content, and field-name
 redaction cannot reliably scrub free text: a prompt, an uploaded document, or a
@@ -1234,7 +1267,9 @@ when you need them.
 
 1. **Default header changed from `X-Correlation-ID` to `X-Request-ID`**
 
-   All services should upgrade to 0.3.0 together so they consistently use `X-Request-ID`. If you need to do a phased rollout, you can temporarily pin the old header on already-upgraded services:
+   All services should upgrade to 0.3.0 together so they consistently use
+   `X-Request-ID`. If you need to do a phased rollout, you can temporarily pin
+   the old header on already-upgraded services:
 
    ```python
    config = ObservabilityConfig(
@@ -1245,8 +1280,11 @@ when you need them.
 
 ### New Features
 
-- **Streaming-friendly middleware** — Safer handling of streaming responses so large bodies are not buffered for logging when not appropriate.
-- **`excluded_paths`** — Skip request/response logging for configured paths (for example health checks or long-lived streams) while still attaching the request ID header.
+- **Streaming-friendly middleware** — Safer handling of streaming responses so
+  large bodies are not buffered for logging when not appropriate.
+- **`excluded_paths`** — Skip request/response logging for configured paths (for
+  example health checks or long-lived streams) while still attaching the request
+  ID header.
 
 ## Development
 
@@ -1301,7 +1339,7 @@ One script covers both languages. Within each, lint runs before the format
 check, so a syntax-level problem is never reported as a formatting one.
 
 | Language | Lint | Format |
-|---|---|---|
+| --- | --- | --- |
 | Python | `ruff check` | `ruff format` |
 | Shell | `shellcheck` | `shfmt` |
 
@@ -1330,7 +1368,7 @@ Two workflows run on every pull request, drafts included, and again when a draft
 is marked ready for review:
 
 | Check | Runs | Covers |
-|---|---|---|
+| --- | --- | --- |
 | `Lint` | `./scripts/lintme.sh --check` | ruff, shellcheck, shfmt |
 | `Tests` | `./scripts/runtests.sh` | pytest |
 

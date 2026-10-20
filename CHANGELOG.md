@@ -18,7 +18,7 @@ opt-in server spans. Everything new sits behind the `otel` extra;
 
 ### Added
 
-- The `otel` extra: `pip install auditry[otel]` (also in `all`).
+- The `otel` extra: `pip install 'auditry[otel]'` (also in `all`).
 - `trace_id` / `span_id` on every log line written inside a valid span context,
   including foreign stdlib records and EMF metric records. Optional fields:
   absent outside a span and without the extra.
@@ -35,12 +35,15 @@ opt-in server spans. Everything new sits behind the `otel` extra;
 - `correlation_id` recorded as an attribute on the current server span, from
   auditry's own server instrumentation or the service's.
 - `auditry.otel.ScrubbingSpanExporter`, which removes credentials, PII,
-  customer content, exception messages and stack traces from every span before
-  handing it to the wrapped exporter, and drops a span rather than export it
-  unscrubbed. Langfuse SDK spans, which reach it through the global tracer
-  provider, keep only operational `langfuse.*` attributes. `ScrubbingOTLPSpanExporter` and `ScrubbingConsoleSpanExporter`
-  are registered as the `opentelemetry_traces_exporter` entry points
-  `auditry_otlp` and `auditry_console`, for zero-code setup.
+  exception messages, stack traces and the customer content its rules recognize
+  from every span before handing it to the wrapped exporter, and drops a span
+  rather than export it unscrubbed. Client span URL paths are exported unchanged
+  apart from email addresses; see the README's Limitations. Langfuse SDK spans,
+  which reach it through the global tracer provider, keep only operational
+  `langfuse.*` attributes. `ScrubbingOTLPSpanExporter` and
+  `ScrubbingConsoleSpanExporter` are registered as the
+  `opentelemetry_traces_exporter` entry points `auditry_otlp` and
+  `auditry_console`, for zero-code setup.
 - `TracingConfig` (`ObservabilityConfig.tracing`): `instrument_server`,
   `query_param_allowlist`, `db_statement` and `keep_client_address`.
 - Opt-in server spans (`tracing.instrument_server=True`) for FastAPI
