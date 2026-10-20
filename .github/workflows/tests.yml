@@ -17,8 +17,15 @@ permissions:
 
 jobs:
   tests:
-    name: pytest
+    # Every supported interpreter (requires-python >= 3.11). The matrix names
+    # the checks "pytest (3.11)" and "pytest (3.12)"; branch protection that
+    # requires a check named "pytest" has to be updated to match.
+    name: pytest (${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
     steps:
       # Third-party actions are pinned to a full commit SHA. A tag, including a
       # patch tag, is mutable and can be repointed at different code; a SHA
@@ -34,10 +41,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # --all-extras brings in fastapi and quart: the suite exercises both
-      # middlewares, and the fastapi tests are skipped without them.
+      # --all-extras brings in fastapi, quart and otel: the suite exercises
+      # both middlewares and tracing, and those tests are skipped without them.
+      # tests/test_no_otel.py covers the install without the otel extra.
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: uv sync --all-extras --locked --python ${{ matrix.python }}
 
       - name: Run tests
         run: ./scripts/runtests.sh

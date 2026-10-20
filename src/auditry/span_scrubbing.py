@@ -1,0 +1,436 @@
+"""
+Span scrubbing rules: what an exported span may carry.
+
+Traces are a general-access destination, so the rules aim to let only
+system-generated operational values (timings, status codes, route templates,
+random IDs, error types) survive export. They remove credentials, PII,
+exception messages, stack traces and the customer content they recognize by
+attribute name or value shape. The rules are pure functions over
+attribute maps and import nothing from OpenTelemetry;
+``auditry.otel.ScrubbingSpanExporter`` applies them to every exported span.
+The README's "Tracing (OpenTelemetry)" section lists what each rule removes.
+"""
+
+import functools
+import re
+import urllib.parse
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, get_args
+
+from .redaction import REDACTED_VALUE, SensitiveDataRedactor
+
+if TYPE_CHECKING:
+    from .models import ObservabilityConfig
+
+__all__ = [
+    "SpanScrubPolicy",
+    "set_span_scrub_policy",
+    "get_span_scrub_policy",
+    "scrub_attributes",
+    "scrub_exception_event",
+    "scrub_span_name",
+    "is_dropped_event",
+    "scrub_query",
+    "scrub_url",
+    "scrub_target",
+    "sanitize_sql",
+    "redact_emails",
+]
+
+DbStatementMode = Literal["sanitize", "drop", "keep"]
+DB_STATEMENT_MODES: tuple[DbStatementMode, ...] = get_args(DbStatementMode)
+# Replace string literals in the statement, drop the statement, or keep it as written.
+SANITIZE_DB_STATEMENT: DbStatementMode = "sanitize"
+DROP_DB_STATEMENT: DbStatementMode = "drop"
+KEEP_DB_STATEMENT: DbStatementMode = "keep"
+DEFAULT_DB_STATEMENT_MODE = SANITIZE_DB_STATEMENT
+
+HTTP_ROUTE_KEY = "http.route"
+URL_PATH_KEY = "url.path"
+HTTP_METHOD_KEY = "http.request.method"
+# The older semconv name, still emitted by some instrumentations.
+LEGACY_HTTP_METHOD_KEY = "http.method"
+# The method semconv records for a verb outside the known set, and the span
+# name OpenTelemetry's ASGI middleware gives such a request.
+OTHER_METHOD = "_OTHER"
+UNKNOWN_METHOD_SPAN_NAME = "HTTP"
+
+# The redaction marker's punctuation, which urlencode would otherwise
+# percent-encode, so a redacted query value reads as the marker in an exported URL.
+REDACTED_MARKER_PUNCTUATION = "".join(sorted({c for c in REDACTED_VALUE if not c.isalnum()}))
+# Distinct pattern sets whose redactor is kept: one per span scrub policy in use.
+REDACTOR_CACHE_SIZE = 32
+
+EXCEPTION_EVENT_NAME = "exception"
+EXCEPTION_TYPE_KEY = "exception.type"
+EXCEPTION_DETAIL_KEYS = frozenset({"exception.message", "exception.stacktrace"})
+
+URL_KEYS = frozenset({"url.full", "http.url", "url.query", "http.target"})
+FULL_URL_KEYS = frozenset({"url.full", "http.url"})
+# A fragment never leaves the client, so it carries no operational value, and
+# it can carry tokens (OAuth implicit flow) or customer content.
+URL_FRAGMENT_KEY = "url.fragment"
+
+CLIENT_ADDRESS_KEYS = frozenset(
+    {
+        "client.address",
+        "client.port",
+        "net.peer.ip",
+        "net.peer.port",
+        "network.peer.address",
+        "network.peer.port",
+        "net.sock.peer.addr",
+        "net.sock.peer.port",
+        "http.client_ip",
+    }
+)
+
+# Present only when the operator sets OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*.
+HEADER_PREFIXES = ("http.request.header.", "http.response.header.")
+
+IDENTITY_PREFIXES = ("enduser.", "user.")
+
+DB_STATEMENT_KEYS = frozenset({"db.statement", "db.query.text"})
+DB_PARAMETER_PREFIX = "db.query.parameter."
+# Where the dbapi, psycopg and asyncpg instrumentations put captured parameters.
+DB_PARAMETERS_KEY = "db.statement.parameters"
+
+# GenAI attributes carrying prompts, responses or retrieved content, from
+# https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/
+# (names change between semconv versions).
+GENAI_CONTENT_KEYS = frozenset(
+    {
+        "gen_ai.prompt",
+        "gen_ai.completion",
+        "gen_ai.input.messages",
+        "gen_ai.output.messages",
+        "gen_ai.system_instructions",
+        "gen_ai.tool.call.arguments",
+        "gen_ai.tool.call.result",
+        "gen_ai.tool.definitions",
+        "gen_ai.retrieval.query.text",
+        "gen_ai.retrieval.documents",
+        "gen_ai.evaluation.explanation",
+    }
+)
+GENAI_CONTENT_PREFIXES = ("gen_ai.prompt.", "gen_ai.completion.")
+GENAI_EVENT_PREFIX = "gen_ai."
+
+# The Langfuse SDK attaches its span processor to the global tracer provider,
+# so its spans reach this exporter too. Its langfuse.* attributes carry prompt
+# input, model output and free-form metadata. Only these operational ones
+# survive; every other langfuse.* key, including any a later SDK adds, is removed.
+LANGFUSE_PREFIX = "langfuse."
+LANGFUSE_OPERATIONAL_KEYS = frozenset(
+    {
+        "langfuse.observation.type",
+        "langfuse.observation.level",
+        "langfuse.observation.model.name",
+        "langfuse.observation.usage_details",
+        "langfuse.observation.cost_details",
+        "langfuse.observation.prompt.name",
+        "langfuse.observation.prompt.version",
+        "langfuse.observation.completion_start_time",
+        "langfuse.environment",
+        "langfuse.release",
+        "langfuse.version",
+    }
+)
+
+# What separates an email's local part from its domain: plain, and URL-encoded.
+_EMAIL_SEPARATORS = ("@", "%40")
+# Anchored at the start of a run of local-part characters, so each run is
+# tried once rather than from every position inside it.
+_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:"
+    + "|".join(map(re.escape, _EMAIL_SEPARATORS))
+    + r")[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
+_EMAIL_BYTES = re.compile(_EMAIL.pattern.encode())
+# PostgreSQL dollar-quote delimiter, $$ or $tag$; a tag follows identifier
+# rules minus "$". Not part of an identifier, which may itself contain "$".
+_SQL_DOLLAR_DELIMITER = re.compile(r"(?<![\w$])\$(?P<tag>(?:[^\W\d]\w*)?)\$")
+# One alternation so the leftmost opener wins: a quote inside a dollar-quoted
+# string, or $$ inside a quoted one, is literal text.
+_SQL_STRING_LITERAL = re.compile(
+    r"'(?:[^']|'')*'|" + _SQL_DOLLAR_DELIMITER.pattern + r"(?s:.*?)\$(?P=tag)\$"
+)
+# Not part of an identifier (table2), a placeholder ($1) or a dotted name.
+_SQL_NUMERIC_LITERAL = re.compile(r"(?<![\w$.])\d+(?:\.\d+)?(?![\w.])")
+
+
+@dataclass(frozen=True)
+class SpanScrubPolicy:
+    """The configurable part of span scrubbing. Everything else is fixed."""
+
+    query_param_allowlist: frozenset[str] = frozenset()
+    redaction_patterns: tuple[str, ...] = ()
+    db_statement: DbStatementMode = DEFAULT_DB_STATEMENT_MODE
+    keep_client_address: bool = False
+
+    def __post_init__(self) -> None:
+        if self.db_statement not in DB_STATEMENT_MODES:
+            raise ValueError(
+                f"db_statement must be one of {DB_STATEMENT_MODES}, got {self.db_statement!r}"
+            )
+
+    @classmethod
+    def from_config(cls, config: "ObservabilityConfig") -> "SpanScrubPolicy":
+        """``config.tracing`` plus ``config.additional_redaction_patterns``."""
+        tracing = config.tracing
+        return cls(
+            query_param_allowlist=frozenset(tracing.query_param_allowlist),
+            redaction_patterns=tuple(config.additional_redaction_patterns or ()),
+            db_statement=tracing.db_statement,
+            keep_client_address=tracing.keep_client_address,
+        )
+
+    @property
+    def redactor(self) -> SensitiveDataRedactor:
+        """The default redaction patterns plus ``redaction_patterns``."""
+        return _redactor(self.redaction_patterns)
+
+
+@functools.lru_cache(maxsize=REDACTOR_CACHE_SIZE)
+def _redactor(patterns: tuple[str, ...]) -> SensitiveDataRedactor:
+    return SensitiveDataRedactor(list(patterns))
+
+
+_DEFAULT_POLICY = SpanScrubPolicy()
+_policy = _DEFAULT_POLICY
+
+
+def set_span_scrub_policy(policy: SpanScrubPolicy | None) -> None:
+    """Set the process-wide policy used by exporters built without one
+    (``create_middleware`` sets it from ObservabilityConfig). ``None``
+    restores the default."""
+    global _policy  # noqa: PLW0603 -- one process-wide setting, as in logging_config
+    _policy = policy or _DEFAULT_POLICY
+
+
+def get_span_scrub_policy() -> SpanScrubPolicy:
+    return _policy
+
+
+# ---------------------------------------------------------------------------
+# Value helpers
+# ---------------------------------------------------------------------------
+
+
+def _redact_emails_in_text(text: str) -> str:
+    if not any(separator in text for separator in _EMAIL_SEPARATORS):
+        return text
+    return _EMAIL.sub(REDACTED_VALUE, text)
+
+
+def redact_emails(value: Any) -> Any:
+    """Email addresses (``@`` or ``%40``) become ``[REDACTED]`` in a
+    string, bytes, or any string inside a sequence or mapping value."""
+    if isinstance(value, str):
+        return _redact_emails_in_text(value)
+    if isinstance(value, bytes):
+        return _EMAIL_BYTES.sub(REDACTED_VALUE.encode(), value)
+    if isinstance(value, Mapping):
+        return {key: redact_emails(item) for key, item in value.items()}
+    if isinstance(value, Sequence):
+        return tuple(redact_emails(item) for item in value)
+    return value
+
+
+def scrub_query(query: str, policy: SpanScrubPolicy) -> str:
+    """Scrub a raw query string (no leading ``?``): a value survives only
+    when its key is allowlisted and matches no redaction pattern. Keys are
+    kept. A query that does not parse is redacted whole."""
+    if not query:
+        return query
+    try:
+        # strict_parsing rejects a segment without "=" (``?q3-deck.pdf``),
+        # which is a value rather than a key.
+        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return REDACTED_VALUE
+    redactor = policy.redactor
+    return urllib.parse.urlencode(
+        [
+            (
+                key,
+                value
+                if key in policy.query_param_allowlist and not redactor.should_redact(key)
+                else REDACTED_VALUE,
+            )
+            for key, value in pairs
+        ],
+        safe=REDACTED_MARKER_PUNCTUATION,
+    )
+
+
+def scrub_url(url: str, policy: SpanScrubPolicy, route: str | None = None) -> str:
+    """Scrub a full URL: userinfo and fragment stripped, query scrubbed. With
+    a ``route``, the path becomes the route. A URL that does not parse is
+    redacted whole."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return REDACTED_VALUE
+    return urllib.parse.urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc.rpartition("@")[2],
+            route if route else parts.path,
+            scrub_query(parts.query, policy),
+            "",
+        )
+    )
+
+
+def scrub_target(target: str, policy: SpanScrubPolicy, route: str | None = None) -> str:
+    """Scrub a request target (``path?query``), dropping any fragment. With a
+    ``route``, the path becomes the route."""
+    path, separator, query = target.partition("#")[0].partition("?")
+    return (route if route else path) + separator + scrub_query(query, policy)
+
+
+def sanitize_sql(statement: str) -> str | None:
+    """``db_statement="sanitize"``: string literals (quoted and PostgreSQL
+    dollar-quoted) and numeric literals become ``?``. Placeholders and
+    identifiers are kept.
+
+    Returns None when literal boundaries are ambiguous, so the statement is
+    dropped rather than exported with a literal shifted into plain text: a
+    backslash-escaped quote (an escape in some databases, an ordinary
+    character in others), or a quote or dollar-quote delimiter still unpaired
+    after sanitizing.
+    """
+    if "\\'" in statement:
+        return None
+    sanitized = _SQL_NUMERIC_LITERAL.sub("?", _SQL_STRING_LITERAL.sub("?", statement))
+    if "'" in sanitized or _SQL_DOLLAR_DELIMITER.search(sanitized):
+        return None
+    return sanitized
+
+
+def _is_sensitive_header(name: str, policy: SpanScrubPolicy) -> bool:
+    redactor = policy.redactor
+    # Older instrumentations normalize header names with "_" for "-".
+    return redactor.should_redact(name) or redactor.should_redact(name.replace("_", "-"))
+
+
+# ---------------------------------------------------------------------------
+# Rules over one attribute map, in the order scrub_attributes applies them
+# ---------------------------------------------------------------------------
+
+_Attributes = dict[str, Any]
+
+
+def _remove_identity(attributes: _Attributes) -> None:
+    """End-user identity: every ``enduser.*`` and ``user.*`` key."""
+    for key in [key for key in attributes if key.startswith(IDENTITY_PREFIXES)]:
+        del attributes[key]
+
+
+def _scrub_db_statements(attributes: _Attributes, mode: DbStatementMode) -> None:
+    """Database statements per ``db_statement``; query parameters always go."""
+    for key in list(attributes):
+        if key == DB_PARAMETERS_KEY or key.startswith(DB_PARAMETER_PREFIX):
+            del attributes[key]
+        elif key in DB_STATEMENT_KEYS and mode != KEEP_DB_STATEMENT:
+            value = attributes[key]
+            sanitized = (
+                sanitize_sql(value)
+                if mode == SANITIZE_DB_STATEMENT and isinstance(value, str)
+                else None
+            )
+            if sanitized is None:
+                del attributes[key]
+            else:
+                attributes[key] = sanitized
+
+
+def _remove_genai_content(attributes: _Attributes) -> None:
+    """GenAI prompt, response and retrieved content."""
+    for key in list(attributes):
+        if key in GENAI_CONTENT_KEYS or key.startswith(GENAI_CONTENT_PREFIXES):
+            del attributes[key]
+
+
+def _remove_langfuse_content(attributes: _Attributes) -> None:
+    """Langfuse SDK attributes other than the operational ones."""
+    for key in list(attributes):
+        if key.startswith(LANGFUSE_PREFIX) and key not in LANGFUSE_OPERATIONAL_KEYS:
+            del attributes[key]
+
+
+def _scrub_urls(attributes: _Attributes, policy: SpanScrubPolicy, route: str | None) -> None:
+    """Query strings in every URL key, fragments removed; with a ``route``,
+    paths become it."""
+    attributes.pop(URL_FRAGMENT_KEY, None)
+    for key in URL_KEYS & attributes.keys():
+        value = attributes[key]
+        if not isinstance(value, str):
+            del attributes[key]
+        elif key in FULL_URL_KEYS:
+            attributes[key] = scrub_url(value, policy, route)
+        elif key == "http.target":
+            attributes[key] = scrub_target(value, policy, route)
+        else:
+            attributes[key] = scrub_query(value, policy)
+    if route and URL_PATH_KEY in attributes:
+        attributes[URL_PATH_KEY] = route
+
+
+def _remove_client_address(attributes: _Attributes) -> None:
+    """The client's IP address and port (server spans)."""
+    for key in CLIENT_ADDRESS_KEYS & attributes.keys():
+        del attributes[key]
+
+
+def _redact_sensitive_headers(attributes: _Attributes, policy: SpanScrubPolicy) -> None:
+    """Captured header values whose name matches a redaction pattern."""
+    for key in attributes:
+        for prefix in HEADER_PREFIXES:
+            if key.startswith(prefix) and _is_sensitive_header(key[len(prefix) :], policy):
+                attributes[key] = (REDACTED_VALUE,)
+
+
+def scrub_attributes(
+    attributes: Mapping[str, Any], *, is_server: bool, policy: SpanScrubPolicy
+) -> dict[str, Any]:
+    """Every attribute rule, in order, over one span, event or link
+    attribute map. Route paths and client-address removal apply only when
+    ``is_server`` is true; email redaction runs last. Returns a new map."""
+    scrubbed = dict(attributes)
+    _remove_identity(scrubbed)
+    _scrub_db_statements(scrubbed, policy.db_statement)
+    _remove_genai_content(scrubbed)
+    _remove_langfuse_content(scrubbed)
+    route = scrubbed.get(HTTP_ROUTE_KEY) if is_server else None
+    _scrub_urls(scrubbed, policy, route if isinstance(route, str) else None)
+    if is_server and not policy.keep_client_address:
+        _remove_client_address(scrubbed)
+    _redact_sensitive_headers(scrubbed, policy)
+    return {key: redact_emails(value) for key, value in scrubbed.items()}
+
+
+def scrub_exception_event(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    """An ``exception`` event keeps ``exception.type`` and
+    ``exception.escaped``; the message and stack trace are removed."""
+    return {key: value for key, value in attributes.items() if key not in EXCEPTION_DETAIL_KEYS}
+
+
+def scrub_span_name(name: str, attributes: Mapping[str, Any], *, is_server: bool) -> str:
+    """Server spans are named ``METHOD route`` (or ``METHOD``); any name is
+    cut at ``?`` and has email addresses redacted. ``attributes`` are the
+    span's attributes, scrubbed or not: the method and route survive."""
+    if is_server:
+        method = attributes.get(HTTP_METHOD_KEY) or attributes.get(LEGACY_HTTP_METHOD_KEY)
+        if isinstance(method, str) and method:
+            method = UNKNOWN_METHOD_SPAN_NAME if method == OTHER_METHOD else method
+            route = attributes.get(HTTP_ROUTE_KEY)
+            name = f"{method} {route}" if isinstance(route, str) and route else method
+    return _redact_emails_in_text(name.split("?", 1)[0])
+
+
+def is_dropped_event(name: str) -> bool:
+    """GenAI events carry prompt and response content."""
+    return name.startswith(GENAI_EVENT_PREFIX)

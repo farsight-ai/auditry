@@ -327,7 +327,7 @@ verify_install() {
     ok "auditry ${version} imports cleanly"
 
     local tool
-    for tool in pytest ruff mypy shellcheck shfmt; do
+    for tool in pytest ruff mypy shellcheck shfmt pymarkdown; do
         if [ -x "${VENV_DIR}/bin/${tool}" ]; then
             ok "${tool} available"
         else
@@ -353,7 +353,7 @@ print_next_steps() {
 ==> Bootstrap complete
 
     Lint and format:
-        ./scripts/lintme.sh              apply ruff's autofixes and formatting
+        ./scripts/lintme.sh              apply autofixes and formatting
         ./scripts/lintme.sh --check      report only, exactly what CI runs
 
     Tests:

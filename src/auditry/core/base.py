@@ -6,7 +6,7 @@ The design prioritizes clarity, maintainability, and proper separation of concer
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 
 class BaseRequestAdapter(ABC):
@@ -43,7 +43,7 @@ class BaseRequestAdapter(ABC):
         pass
 
     @abstractmethod
-    async def extract_body(self, request: Any) -> Optional[bytes]:
+    async def extract_body(self, request: Any) -> bytes | None:
         """
         Extract the raw body bytes from the request.
 
@@ -53,7 +53,7 @@ class BaseRequestAdapter(ABC):
         pass
 
     @abstractmethod
-    async def extract_user_id(self, request: Any) -> Optional[str]:
+    async def extract_user_id(self, request: Any) -> str | None:
         """
         Extract the user identifier from the request if available.
 
@@ -98,7 +98,7 @@ class BaseResponseAdapter(ABC):
         pass
 
     @abstractmethod
-    async def extract_body(self, response: Any) -> Optional[bytes]:
+    async def extract_body(self, response: Any) -> bytes | None:
         """
         Extract the raw body bytes from the response.
 

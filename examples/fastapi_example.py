@@ -8,8 +8,6 @@ This example demonstrates:
 - Custom redaction patterns
 """
 
-from typing import Optional
-
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -68,7 +66,7 @@ class UserCreate(BaseModel):
     name: str
     email: str
     password: str  # Will be redacted in logs
-    phone: Optional[str] = None  # Will be redacted due to custom pattern
+    phone: str | None = None  # Will be redacted due to custom pattern
 
 
 class UserResponse(BaseModel):

@@ -1,7 +1,8 @@
 import warnings
-from typing import Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
+
+from .span_scrubbing import DEFAULT_DB_STATEMENT_MODE, DbStatementMode
 
 # Health/liveness probes are excluded from request/response logging by
 # default (they still get the correlation-ID header). A load balancer pings
@@ -28,15 +29,56 @@ class BusinessEventConfig(BaseModel):
     event_type: str = Field(
         description="Business event type (e.g., 'folder.created', 'file.uploaded')"
     )
-    extract_from_request: Optional[list[str]] = Field(
+    extract_from_request: list[str] | None = Field(
         default=None, description="Field names to extract from request body for business context"
     )
-    extract_from_response: Optional[list[str]] = Field(
+    extract_from_response: list[str] | None = Field(
         default=None, description="Field names to extract from response body for business context"
     )
-    extract_from_path: Optional[list[str]] = Field(
+    extract_from_path: list[str] | None = Field(
         default=None,
         description="Path parameter names to extract (e.g., ['folder_id'] for /folders/{folder_id})",
+    )
+
+
+class TracingConfig(BaseModel):
+    """
+    OpenTelemetry tracing options (requires the ``otel`` extra).
+
+    The scrubbing fields apply to every span exported through
+    ``auditry.otel.ScrubbingSpanExporter``, whichever instrumentation created it.
+    """
+
+    instrument_server: bool = Field(
+        default=False,
+        description=(
+            "Start an OpenTelemetry server span per request. Leave False when the "
+            "service already instruments itself (FastAPIInstrumentor, "
+            "opentelemetry-instrument), so requests do not get duplicate spans."
+        ),
+    )
+    query_param_allowlist: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Query parameter names whose values survive span scrubbing. Every other "
+            "value, and any name matching a redaction pattern, is exported as "
+            "[REDACTED]. Empty by default."
+        ),
+    )
+    db_statement: DbStatementMode = Field(
+        default=DEFAULT_DB_STATEMENT_MODE,
+        description=(
+            "How spans export db.statement / db.query.text: 'sanitize' replaces "
+            "string and numeric literals with '?', 'drop' removes the attribute, "
+            "'keep' exports it unchanged."
+        ),
+    )
+    keep_client_address: bool = Field(
+        default=False,
+        description=(
+            "Keep the client IP address and port on server spans. Off by default: "
+            "an end-user IP address is PII."
+        ),
     )
 
 
@@ -65,7 +107,7 @@ class ObservabilityConfig(BaseModel):
             raise ValueError("service_name cannot be empty or whitespace")
         return v.strip()
 
-    business_events: Optional[dict[str, BusinessEventConfig]] = Field(
+    business_events: dict[str, BusinessEventConfig] | None = Field(
         default=None,
         description="Map of endpoint patterns to business event configurations for analytics tracking",
     )
@@ -73,7 +115,7 @@ class ObservabilityConfig(BaseModel):
         default=10_240,
         description="Maximum size in bytes for logged request/response bodies (default 10KB)",
     )
-    additional_redaction_patterns: Optional[list[str]] = Field(
+    additional_redaction_patterns: list[str] | None = Field(
         default=None,
         description="Additional field name patterns to redact beyond defaults",
     )
@@ -120,7 +162,7 @@ class ObservabilityConfig(BaseModel):
             "opt out and manage exclusions entirely yourself."
         ),
     )
-    excluded_paths: Optional[Union[list[str], dict[str, list[str]]]] = Field(
+    excluded_paths: list[str] | dict[str, list[str]] | None = Field(
         default=None,
         description=(
             "Paths to exclude from observability middleware. "
@@ -128,6 +170,13 @@ class ObservabilityConfig(BaseModel):
             "or a dict mapping HTTP methods to paths (e.g., {'GET': ['/health'], 'POST': ['/stream*']}). "
             "Supports wildcards (*) for pattern matching. Health/liveness probe "
             "paths are merged in by default (see include_default_excluded_paths)."
+        ),
+    )
+    tracing: TracingConfig = Field(
+        default_factory=TracingConfig,
+        description=(
+            "OpenTelemetry tracing: opt-in server spans and the span scrubbing "
+            "policy (see TracingConfig)."
         ),
     )
 

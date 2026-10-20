@@ -1,21 +1,19 @@
 [project]
 name = "auditry"
-version = "0.5.0"
-description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, and sensitive data redaction"
+version = "0.6.0"
+description = "Observability middleware for FastAPI and Quart with request/response logging, request IDs, sensitive data redaction, and OpenTelemetry tracing"
 authors = [
     {name = "Ilana Zane", email = "ilana@farsight-ai.com"},
     {name = "Colin Stark"} 
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
-keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction"]
+keywords = ["fastapi", "quart", "observability", "logging", "middleware", "request-id", "redaction", "opentelemetry", "tracing"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Framework :: FastAPI",
@@ -38,11 +36,15 @@ fastapi = [
 quart = [
     "quart>=0.18.0",
 ]
-all = [
-    "fastapi>=0.100.0",
-    "starlette>=0.27.0",
-    "quart>=0.18.0",
+otel = [
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
+    "opentelemetry-instrumentation-asgi>=0.66b1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
 ]
+# Every other extra, by reference, so each requirement is pinned in one list.
+all = ["auditry[fastapi,quart,otel]"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -59,6 +61,9 @@ dev = [
     # Homebrew locally and apt in CI, which drift.
     "shellcheck-py==0.11.0.1",
     "shfmt-py==4.2.0",
+    # Markdown lint. Pure Python with rules modeled on markdownlint's (same
+    # MD0xx ids), so it installs from uv.lock like the rest of the toolchain.
+    "pymarkdownlnt==0.9.40",
 ]
 
 [project.urls]
@@ -66,12 +71,18 @@ Homepage = "https://github.com/farsight-ai/auditry"
 Repository = "https://github.com/farsight-ai/auditry"
 Issues = "https://github.com/farsight-ai/auditry/issues"
 
+# OTEL_TRACES_EXPORTER=auditry_otlp (or auditry_console) selects these in
+# zero-code setup; the SDK constructs them with no arguments.
+[project.entry-points.opentelemetry_traces_exporter]
+auditry_otlp = "auditry.otel.exporter:ScrubbingOTLPSpanExporter"
+auditry_console = "auditry.otel.exporter:ScrubbingConsoleSpanExporter"
+
 [build-system]
 requires = ["setuptools>=61.0,<70.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.quart"]
+packages = ["auditry", "auditry.core", "auditry.fastapi", "auditry.otel", "auditry.quart"]
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
@@ -80,7 +91,7 @@ auditry = ["py.typed"]
 [tool.ruff]
 line-length = 100
 # The oldest interpreter in requires-python: UP rewrites are only safe up to it.
-target-version = "py39"
+target-version = "py311"
 src = ["src"]
 exclude = [".venv", "venv", "__pycache__", "build", "dist"]
 # The formatter also rewrites Python code blocks inside Markdown. The README's
@@ -103,6 +114,20 @@ ignore = ["E501"]
 quote-style = "double"
 indent-style = "space"
 
+# Markdown lint, run by scripts/lintme.sh from the repository root.
+# https://pymarkdown.readthedocs.io/en/latest/advanced_configuration/
+[tool.pymarkdown]
+# GFM tables, so md013 can tell a table row from prose.
+extensions.markdown-tables.enabled = true
+# Prose wraps at 80 columns; a table row or a code line cannot be wrapped.
+plugins.md013.tables = false
+plugins.md013.code_blocks = false
+# The changelog repeats "Added" / "Fixed" under every release.
+plugins.md024.siblings_only = true
+# CLAUDE.md is a one-line "@AGENTS.md" import for Claude Code, so it has no
+# heading of its own.
+system.exclude_path = "CLAUDE.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Hard ceiling so a regressed event-loop spin (see DEV-1150) fails fast in CI
@@ -111,7 +136,7 @@ timeout = 30
 timeout_method = "thread"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

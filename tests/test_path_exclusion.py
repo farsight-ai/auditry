@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from quart import Quart, Response, stream_with_context
 from src.auditry import ObservabilityConfig, configure_logging
 from src.auditry.fastapi import create_middleware as create_fastapi_middleware
+from src.auditry.path_matcher import app_path, should_exclude_path, should_exclude_scope
 from src.auditry.quart import create_middleware as create_quart_middleware
 
 
@@ -267,7 +268,6 @@ async def test_fastapi_non_excluded_path_is_logged(fastapi_app_with_exclusions, 
 
 
 def test_matcher_basics():
-    from src.auditry.path_matcher import should_exclude_path
 
     # exact
     assert should_exclude_path("/health", "GET", ["/health"])
@@ -286,9 +286,42 @@ def test_matcher_basics():
 
 
 def test_method_specific():
-    from src.auditry.path_matcher import should_exclude_path
 
     cfg = {"GET": ["/health"], "POST": ["/webhook"], "*": ["/admin/*"]}
     assert should_exclude_path("/health", "GET", cfg)
     assert not should_exclude_path("/health", "POST", cfg)
     assert should_exclude_path("/admin/users", "DELETE", cfg)
+
+
+def scope(path, root_path="", scope_type="http", **extra):
+    return {"type": scope_type, "path": path, "root_path": root_path, **extra}
+
+
+@pytest.mark.parametrize(
+    ("path", "root_path", "expected"),
+    [
+        ("/health", "", "/health"),
+        ("/svc/health", "/svc", "/health"),
+        ("/svcx/health", "/svc", "/svcx/health"),
+        ("/svc", "/svc", ""),
+        ("/other", "/svc", "/other"),
+    ],
+)
+def test_app_path_removes_the_root_path_at_a_segment_boundary(path, root_path, expected):
+    assert app_path(scope(path, root_path)) == expected
+
+
+def test_a_scope_is_matched_by_its_path_inside_the_app():
+    assert should_exclude_scope(scope("/svc/health", "/svc", method="GET"), ["/health"])
+
+
+def test_a_scope_is_matched_by_its_method():
+    assert not should_exclude_scope(scope("/stream", method="POST"), {"GET": ["/stream"]})
+
+
+def test_a_websocket_scope_matches_as_its_get_handshake():
+    assert should_exclude_scope(scope("/ws", scope_type="websocket"), {"GET": ["/ws"]})
+
+
+def test_a_lifespan_scope_is_never_excluded():
+    assert not should_exclude_scope({"type": "lifespan"}, ["/health"])

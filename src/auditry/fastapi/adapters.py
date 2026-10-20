@@ -6,7 +6,6 @@ FastAPI/Starlette request and response objects.
 """
 
 import inspect
-from typing import Optional
 
 from fastapi import Request, Response
 from starlette.responses import StreamingResponse
@@ -44,7 +43,7 @@ class FastAPIRequestAdapter(BaseRequestAdapter):
             return dict(request.path_params)
         return {}
 
-    async def extract_body(self, request: Request) -> Optional[bytes]:
+    async def extract_body(self, request: Request) -> bytes | None:
         """
         Extract body from FastAPI request.
 
@@ -58,7 +57,7 @@ class FastAPIRequestAdapter(BaseRequestAdapter):
         except Exception:
             return None
 
-    async def extract_user_id(self, request: Request) -> Optional[str]:
+    async def extract_user_id(self, request: Request) -> str | None:
         """
         Extract user ID from FastAPI request state.
 
@@ -95,7 +94,7 @@ class FastAPIResponseAdapter(BaseResponseAdapter):
         """Extract headers from FastAPI response."""
         return dict(response.headers)
 
-    async def extract_body(self, response: Response) -> Optional[bytes]:
+    async def extract_body(self, response: Response) -> bytes | None:
         """
         Extract body from FastAPI response.
 

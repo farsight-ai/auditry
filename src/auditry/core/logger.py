@@ -7,7 +7,7 @@ request and response data captured by the framework adapters.
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -42,7 +42,7 @@ class RequestResponseLogger:
         self.logger = structlog.get_logger(__name__)
 
     def prepare_request_data(
-        self, raw_data: dict[str, Any], correlation_id: Optional[str] = None
+        self, raw_data: dict[str, Any], correlation_id: str | None = None
     ) -> dict[str, Any]:
         """
         Prepare request data for logging.
@@ -125,8 +125,8 @@ class RequestResponseLogger:
         request_data: dict[str, Any],
         response_data: dict[str, Any],
         duration_ms: float,
-        correlation_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        correlation_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         """
         Log a successful request/response cycle.
@@ -167,8 +167,8 @@ class RequestResponseLogger:
         request_data: dict[str, Any],
         error: Exception,
         duration_ms: float,
-        correlation_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        correlation_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         """
         Log a failed request.
@@ -211,14 +211,14 @@ class RequestResponseLogger:
             **log_entry,
         )
 
-    def _bind_context(self, correlation_id: Optional[str], user_id: Optional[str]) -> None:
+    def _bind_context(self, correlation_id: str | None, user_id: str | None) -> None:
         """Bind correlation ID and user ID to the structured logging context."""
         if correlation_id:
             structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
         if user_id:
             structlog.contextvars.bind_contextvars(user_id=user_id)
 
-    def _parse_and_redact_body(self, body: Optional[bytes]) -> Optional[Any]:
+    def _parse_and_redact_body(self, body: bytes | None) -> Any | None:
         """
         Parse body bytes and apply redaction.
 
@@ -252,7 +252,7 @@ class RequestResponseLogger:
 
     def _extract_business_event(
         self, request_data: dict[str, Any], response_data: dict[str, Any]
-    ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    ) -> tuple[str | None, dict[str, Any] | None]:
         """
         Extract business event information if the request matches a configured pattern.
 

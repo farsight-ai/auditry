@@ -16,3 +16,7 @@ class DimensionLimitError(AuditryError, ValueError):
 class MetricRecordError(AuditryError, ValueError):
     """A metric record is malformed: reserved or colliding names, or a rollup
     naming a dimension the record does not carry."""
+
+
+class MessageAttributeLimitError(AuditryError, ValueError):
+    """Trace context would push a message past the SQS message-attribute quota."""

@@ -38,14 +38,15 @@ jobs:
 
       # --locked fails if uv.lock no longer matches pyproject.toml, so a
       # forgotten re-lock is caught here instead of at the next sync. Every
-      # linter comes from the lock -- ruff, and the shellcheck/shfmt binaries
-      # that ship inside wheels -- which is what makes the local run and this
-      # one agree on what counts as a violation.
+      # linter comes from the lock -- ruff, pymarkdown, and the shellcheck/shfmt
+      # binaries that ship inside wheels -- which is what makes the local run
+      # and this one agree on what counts as a violation.
       - name: Install dependencies
         run: uv sync --all-extras --locked
 
-      # Python: ruff check, then ruff format --check.
-      # Shell:  shellcheck, then shfmt -d over every *.sh in the repo.
+      # Python:   ruff check, then ruff format --check.
+      # Shell:    shellcheck, then shfmt -d over every *.sh in the repo.
+      # Markdown: pymarkdown scan over every *.md outside .gitignore.
       # Writes nothing. ruff violations become inline annotations on the diff.
-      - name: Lint (Python and shell)
+      - name: Lint (Python, shell and Markdown)
         run: ./scripts/lintme.sh --check
