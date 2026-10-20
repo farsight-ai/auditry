@@ -27,6 +27,7 @@ import inspect
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from asgi_correlation_id import correlation_id
@@ -35,6 +36,7 @@ from .errors import MessageAttributeLimitError
 from .tracing import (
     attach_context,
     context_from_carrier,
+    current_context,
     detach_context,
     drop_or_raise,
     inject_trace_context,
@@ -57,6 +59,12 @@ __all__ = [
 ]
 
 DEFAULT_HEADER = "X-Request-ID"
+
+# The trace context bind_from_sqs_message last attached, paired with the
+# context that was current before it.
+_sqs_attached: "ContextVar[tuple[Context, Context] | None]" = ContextVar(
+    "auditry_sqs_attached", default=None
+)
 SQS_ATTRIBUTE_NAME = "correlation_id"
 
 # W3C Trace Context fields, used verbatim as header and message-attribute
@@ -289,11 +297,23 @@ def bind_from_sqs_message(message: dict[str, Any]) -> str:
     Falls back to a fresh random ID if the attribute is absent, so a log
     line is never emitted without one. Also attaches the message's trace
     context, when it carries a valid one. Both bindings are sticky (see
-    ``bind_correlation_id``); in a long-lived consumer, wrap each message in
+    ``bind_correlation_id``) until the next call, which replaces them: a
+    message without trace context does not inherit the previous message's.
+    In a long-lived consumer, wrap each message in
     ``bound_message_context(message)`` instead.
     """
     cid = bind_correlation_id(extract_correlation_id(message))
-    attach_context(extract_trace_context(message))
+    # Undo the previous attach only while it is still current. A context the
+    # consumer entered since (a span per poll batch) is left in place. Setting
+    # the earlier context, rather than detaching a token, also works in a task
+    # whose context was copied from the one that attached.
+    attached = _sqs_attached.get()
+    if attached is not None and current_context() is attached[1]:
+        attach_context(attached[0])
+    before = current_context()
+    ctx = extract_trace_context(message)
+    attach_context(ctx)
+    _sqs_attached.set(None if before is None or ctx is None else (before, ctx))
     return cid
 
 
@@ -305,7 +325,7 @@ def with_correlation(func: F) -> F:
     The ID is taken, in order, from a ``correlation_id`` keyword argument
     when the caller passes one (the producer got it from
     ``ensure_correlation_id()``), else from the ID already bound in the
-    current context (e.g. by ``bind_from_sqs_message`` in a consumer loop),
+    current context (e.g. by ``bound_message_context`` in a consumer loop),
     else a fresh random ID. An ID that is already in flight is propagated,
     never replaced. The kwarg is left in place if the wrapped function
     accepts it, and stripped otherwise.

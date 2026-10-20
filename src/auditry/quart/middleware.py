@@ -4,7 +4,7 @@ import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from quart import Quart, Request, Response, request
-from quart.signals import got_request_exception, request_started
+from quart.signals import got_request_exception, request_started, websocket_started
 from quart.wrappers.response import IterableBody
 
 from ..core import BaseMiddleware, RequestResponseLogger
@@ -16,6 +16,11 @@ from ..propagation import _set_correlation_header
 from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
 from ..tracing import require_otel, set_span_correlation_id
 from .adapters import QuartRequestAdapter, QuartResponseAdapter
+
+# Sent for each request or websocket before any before_request /
+# before_websocket hook runs, so an app hook that returns a response or
+# aborts cannot skip a receiver. Both are process-wide: connect with sender=.
+CONNECTION_STARTED_SIGNALS = (request_started, websocket_started)
 
 
 class QuartMiddleware(BaseMiddleware):
@@ -42,12 +47,10 @@ class QuartMiddleware(BaseMiddleware):
 
     def _register_hooks(self):
         """Register Quart before_request and after_request hooks, and the
-        request-started and unhandled-exception receivers."""
+        connection-started and unhandled-exception receivers."""
 
-        # request_started fires before any before_request hook, so an app
-        # hook that returns a response or aborts cannot skip it. The signal is
-        # process-wide: sender= limits it to this app's requests.
-        request_started.connect(_record_span_correlation_id, sender=self.app)
+        for signal in CONNECTION_STARTED_SIGNALS:
+            signal.connect(_record_span_correlation_id, sender=self.app)
 
         @self.app.before_request
         async def capture_request_start():

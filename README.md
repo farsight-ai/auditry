@@ -307,8 +307,9 @@ in place if your function accepts it and strips it if not, so you can decorate
 functions that never declared it.
 
 If a decorated handler runs while an ID is already bound in the context (the
-consumer loop called `bind_from_sqs_message` first), it continues that trace
-rather than starting a new one — an ID in flight is propagated, never replaced.
+consumer loop wrapped the message in `bound_message_context`), it continues that
+trace rather than starting a new one — an ID in flight is propagated, never
+replaced.
 
 When the unit of work isn't a function, `bound_correlation_id()` does the same
 thing as a context manager — binds for the block, restores the previous context
@@ -432,8 +433,13 @@ pip install opentelemetry-distro
 OTEL_TRACES_EXPORTER=auditry_otlp \
 OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318 \
 OTEL_LOGS_EXPORTER=none \
+OTEL_METRICS_EXPORTER=none \
 opentelemetry-instrument uvicorn app:app
 ```
+
+`OTEL_METRICS_EXPORTER=none` is required: `opentelemetry-distro` defaults the
+metrics exporter to OTLP over gRPC, which the `otel` extra does not install, and
+without it auto-initialization fails, so the service runs with no spans.
 
 `auditry_otlp` is OTLP over HTTP, configured by the usual `OTEL_EXPORTER_OTLP_*`
 variables. `auditry_console` prints scrubbed spans to stdout for local
@@ -450,8 +456,8 @@ one span:
 
 - FastAPI: `FastAPIInstrumentor`, named `GET /files/{name}` by route template.
 - Quart: there is no official Quart instrumentation, so auditry wraps the app in
-  OpenTelemetry's ASGI middleware (outermost) and renames each span to its
-  route rule, `GET /files/<name>`.
+  OpenTelemetry's ASGI middleware (outermost) and renames each span, websockets
+  included, to its route rule, `GET /files/<name>`.
 
 Paths in `excluded_paths` get no span, and still get the request-ID header.
 
@@ -503,7 +509,9 @@ for message in response.get("Messages", []):
 Both boto3 records (`MessageAttributes` / `StringValue`) and Lambda event
 records (`messageAttributes` / `stringValue`) are read. `extract_trace_context(message)`
 returns the context without attaching it. `bind_from_sqs_message()` attaches it
-too, and like its correlation binding, that is sticky.
+too, and like its correlation binding, that is sticky until the next call: a
+message without trace context gets the consumer's own context, not the previous
+message's.
 
 SQS allows 10 message attributes. When the trace attributes would push a message
 past that, they are skipped with one warning per process (the correlation ID is

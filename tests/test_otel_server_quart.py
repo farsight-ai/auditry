@@ -41,6 +41,10 @@ def add_routes(app):
     async def health():
         return {"ok": True}
 
+    @app.websocket("/ws/files/<name>")
+    async def ws_file(name):
+        await quart.websocket.send("ok")
+
     @app.route("/boom")
     async def boom():
         raise ValueError(MESSAGE)
@@ -93,6 +97,16 @@ class TestServerSpans:
         assert raw.attributes["http.route"] == "/files/<name>"
         (scrubbed,) = otel.scrubbed_server_spans()
         assert scrubbed.name == "GET /files/<name>"
+
+    async def test_websocket_named_by_route_rule_with_correlation_id(self, otel):
+        async with traced_app().test_client().websocket(FILE_URL.replace("/", "/ws/", 1)) as ws:
+            assert await ws.receive() == "ok"
+        (span,) = otel.scrubbed_server_spans()
+        assert span.name == "GET /ws/files/<name>"
+        assert span.attributes["http.route"] == "/ws/files/<name>"
+        assert span.attributes["http.target"] == "/ws/files/<name>"
+        assert span.attributes["correlation_id"]
+        assert "q3-board-deck" not in span.to_json()
 
     async def test_unmatched_request_is_named_by_method(self, otel):
         response = await traced_app().test_client().get("/nope/jane@example.com")

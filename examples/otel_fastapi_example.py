@@ -11,6 +11,7 @@ Zero-code setup (also needs opentelemetry-distro); auditry's exporter is
 selected by name:
 
     OTEL_TRACES_EXPORTER=auditry_console OTEL_LOGS_EXPORTER=none \\
+        OTEL_METRICS_EXPORTER=none \\
         opentelemetry-instrument python examples/otel_fastapi_example.py
 
 Either way, __main__ sends one request with a query string and one to a

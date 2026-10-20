@@ -36,6 +36,7 @@ __all__ = [
     "current_trace_fields",
     "inject_trace_context",
     "context_from_carrier",
+    "current_context",
     "attach_context",
     "detach_context",
     "set_span_correlation_id",
@@ -143,6 +144,14 @@ def context_from_carrier(carrier: Mapping[str, str]) -> "Context | None":
     if not otel_trace.get_current_span(ctx).get_span_context().is_valid:
         return None
     return ctx
+
+
+@_never_raises
+def current_context() -> "Context | None":
+    """The current OpenTelemetry context, or ``None`` without the extra."""
+    if otel_context is None:
+        return None
+    return otel_context.get_current()
 
 
 @_never_raises

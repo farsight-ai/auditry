@@ -7,13 +7,13 @@ OpenTelemetry's generic ASGI middleware and names each span by its route.
 from hypercorn.typing import ASGIFramework, ASGIReceiveCallable, ASGISendCallable, Scope
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.trace import TracerProvider, get_current_span
-from quart import Quart, request
-from quart.signals import request_started
+from quart import Quart, has_websocket_context, request, websocket
 
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..span_scrubbing import HTTP_ROUTE_KEY
 from ..tracing import EXCLUDED_ASGI_SPANS, drop_or_raise
+from .middleware import CONNECTION_STARTED_SIGNALS
 
 __all__ = ["instrument_quart"]
 
@@ -66,19 +66,19 @@ def instrument_quart(
     app.asgi_app = _TracedUnlessExcluded(  # type: ignore[assignment]
         app.asgi_app, traced, config.excluded_paths
     )
-    request_started.connect(_name_span_by_route, sender=app)
+    for signal in CONNECTION_STARTED_SIGNALS:
+        signal.connect(_name_span_by_route, sender=app)
 
 
 async def _name_span_by_route(sender: Quart, **extra: object) -> None:
     """The generic ASGI middleware names spans by raw path; the route rule
-    is known once Quart has matched the request. ``request_started`` fires
-    before any ``before_request`` hook, so a hook that returns a response or
-    aborts cannot leave the span with its raw path."""
+    is known once Quart has matched the request or websocket."""
     try:
-        rule = request.url_rule
+        connection = websocket if has_websocket_context() else request
+        rule = connection.url_rule
         span = get_current_span()
         if rule is not None and span.is_recording():
-            span.update_name(f"{request.method} {rule.rule}")
+            span.update_name(f"{connection.method} {rule.rule}")
             span.set_attribute(HTTP_ROUTE_KEY, rule.rule)
     except Exception as exc:
         drop_or_raise("quart_span_name", exc)

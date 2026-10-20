@@ -143,6 +143,32 @@ class TestSqsRoundTrip:
         # A copied context keeps the sticky binding out of later tests.
         assert contextvars.copy_context().run(consume) == producer.get_span_context().trace_id
 
+    def test_bind_from_sqs_message_does_not_carry_trace_to_the_next_message(self, otel):
+        with otel.tracer.start_as_current_span("producer"):
+            traced = received(sqs_message_attributes())
+
+        def consume():
+            bind_from_sqs_message(traced)
+            bind_from_sqs_message(received({}))
+            return trace.get_current_span().get_span_context().is_valid
+
+        assert contextvars.copy_context().run(consume) is False
+
+    def test_untraced_message_falls_back_to_the_consumers_current_span(self, otel):
+        """A span the consumer opened after the previous bind (one per poll
+        batch) is the parent, not the context from before that bind."""
+        with otel.tracer.start_as_current_span("producer"):
+            traced = received(sqs_message_attributes())
+
+        def consume():
+            with otel.tracer.start_as_current_span("batch 1"):
+                bind_from_sqs_message(traced)
+            with otel.tracer.start_as_current_span("batch 2") as batch:
+                bind_from_sqs_message(received({}))
+                return trace.get_current_span() is batch
+
+        assert contextvars.copy_context().run(consume) is True
+
 
 class TestSqsAttributeLimit:
     @staticmethod

@@ -31,7 +31,8 @@ opt-in server spans. Everything new sits behind the `otel` extra;
 - `bound_message_context(message)`: binds a received message's correlation ID
   and attaches its trace context for a block, then restores both.
   `extract_trace_context(message)` returns the context without attaching it.
-  `bind_from_sqs_message()` now also attaches the trace context (sticky).
+  `bind_from_sqs_message()` now also attaches the trace context (sticky until
+  the next call, so a message without one does not inherit the previous one's).
 - `correlation_id` recorded as an attribute on the current server span, from
   auditry's own server instrumentation or the service's.
 - `auditry.otel.ScrubbingSpanExporter`, which removes credentials, PII,
