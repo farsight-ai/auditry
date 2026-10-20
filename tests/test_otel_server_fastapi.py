@@ -19,6 +19,7 @@ testclient = pytest.importorskip("fastapi.testclient")
 trace = pytest.importorskip("opentelemetry.trace")
 instrumentation = pytest.importorskip("opentelemetry.instrumentation.fastapi")
 auditry_fastapi = pytest.importorskip("auditry.fastapi")
+fastapi_tracing = pytest.importorskip("auditry.fastapi.tracing")
 
 pytestmark = pytest.mark.usefixtures("clean_logging", "otel")
 
@@ -165,6 +166,38 @@ class TestServerSpans:
         )
         testclient.TestClient(auditry_fastapi.create_middleware(app, config)).get(FILE_URL)
         assert otel.raw_spans() == []
+
+
+class TestUnexpectedStack:
+    """An instrumentor whose stack has no OpenTelemetryMiddleware where
+    instrument_fastapi expects it."""
+
+    @pytest.fixture(autouse=True)
+    def stack_without_opentelemetry(self, monkeypatch):
+        monkeypatch.setattr(
+            instrumentation.FastAPIInstrumentor,
+            "instrument_app",
+            staticmethod(lambda app, **kwargs: None),
+        )
+
+    def test_production_keeps_serving(self, otel):
+        configure_logging(service="svc", environment="prod")
+        assert traced_client().get(FILE_URL).status_code == 200
+
+    def test_production_warns_that_exclusions_are_lost(self, otel, log_lines):
+        configure_logging(service="svc", environment="prod")
+        traced_client().get(FILE_URL)
+        (warning,) = [line for line in log_lines() if line["message"] == "tracing signal dropped"]
+        assert (warning["operation"], warning["error_type"]) == (
+            "fastapi_excluded_paths",
+            "UnexpectedStackError",
+        )
+
+    def test_strict_mode_raises(self, otel):
+        configure_logging(service="svc", strict=True)
+        app = auditry_fastapi.create_middleware(add_routes(fastapi.FastAPI()), make_config())
+        with pytest.raises(fastapi_tracing.UnexpectedStackError):
+            testclient.TestClient(app).get(FILE_URL)
 
 
 class TestScrubbing:

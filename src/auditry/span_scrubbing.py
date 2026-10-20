@@ -40,7 +40,11 @@ __all__ = [
 
 DbStatementMode = Literal["sanitize", "drop", "keep"]
 DB_STATEMENT_MODES: tuple[DbStatementMode, ...] = get_args(DbStatementMode)
-DEFAULT_DB_STATEMENT_MODE: DbStatementMode = "sanitize"
+# Replace string literals in the statement, drop the statement, or keep it as written.
+SANITIZE_DB_STATEMENT: DbStatementMode = "sanitize"
+DROP_DB_STATEMENT: DbStatementMode = "drop"
+KEEP_DB_STATEMENT: DbStatementMode = "keep"
+DEFAULT_DB_STATEMENT_MODE = SANITIZE_DB_STATEMENT
 
 HTTP_ROUTE_KEY = "http.route"
 URL_PATH_KEY = "url.path"
@@ -126,9 +130,15 @@ LANGFUSE_OPERATIONAL_KEYS = frozenset(
     }
 )
 
+# What separates an email's local part from its domain: plain, and URL-encoded.
+_EMAIL_SEPARATORS = ("@", "%40")
 # Anchored at the start of a run of local-part characters, so each run is
 # tried once rather than from every position inside it.
-_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:"
+    + "|".join(map(re.escape, _EMAIL_SEPARATORS))
+    + r")[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
 _EMAIL_BYTES = re.compile(_EMAIL.pattern.encode())
 # PostgreSQL dollar-quote delimiter, $$ or $tag$; a tag follows identifier
 # rules minus "$". Not part of an identifier, which may itself contain "$".
@@ -201,7 +211,7 @@ def get_span_scrub_policy() -> SpanScrubPolicy:
 
 
 def _redact_emails_in_text(text: str) -> str:
-    if "@" not in text and "%40" not in text:
+    if not any(separator in text for separator in _EMAIL_SEPARATORS):
         return text
     return _EMAIL.sub(REDACTED_VALUE, text)
 
@@ -311,15 +321,17 @@ def _remove_identity(attributes: _Attributes) -> None:
         del attributes[key]
 
 
-def _scrub_db_statements(attributes: _Attributes, mode: str) -> None:
+def _scrub_db_statements(attributes: _Attributes, mode: DbStatementMode) -> None:
     """Database statements per ``db_statement``; query parameters always go."""
     for key in list(attributes):
         if key.startswith(DB_PARAMETER_PREFIX):
             del attributes[key]
-        elif key in DB_STATEMENT_KEYS and mode != "keep":
+        elif key in DB_STATEMENT_KEYS and mode != KEEP_DB_STATEMENT:
             value = attributes[key]
             sanitized = (
-                sanitize_sql(value) if mode == "sanitize" and isinstance(value, str) else None
+                sanitize_sql(value)
+                if mode == SANITIZE_DB_STATEMENT and isinstance(value, str)
+                else None
             )
             if sanitized is None:
                 del attributes[key]

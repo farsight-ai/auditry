@@ -267,7 +267,7 @@ async def proxy_request():
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://downstream-service.com/api/data",
-            headers=outbound_headers(),          # {"X-Request-ID": "<id>"}
+            headers=outbound_headers(),          # {"X-Request-ID": "<id>"}, plus traceparent in a span
         )
 
     return response.json()
@@ -278,7 +278,10 @@ The header name defaults to your configured `correlation_id_header` (seeded when
 the same name outbound. Pass `extra=` to merge with headers you were already
 sending, and `header_name=` to override the name for one call. Attach these to
 third-party API calls too, wherever the SDK accepts custom headers — it makes
-the vendor's audit trail line up with yours.
+the vendor's audit trail line up with yours. Inside a span they also carry
+`traceparent` and `tracestate`, so the vendor receives your trace and span IDs
+(random, no request content); to send only the correlation ID, pass
+`{"X-Request-ID": get_correlation_id()}` instead.
 
 ## Correlation Propagation Beyond HTTP
 
@@ -353,8 +356,9 @@ bind_from_sqs_message(message)
 ```
 
 Both fall back to a fresh ID when the attribute is absent, so a consumer never
-logs without one. With the `otel` extra installed, the same helpers also carry
-the W3C trace context; see [SQS and SNS](#sqs-and-sns).
+logs without one. Whenever the OpenTelemetry API is importable (with the `otel`
+extra, or through Langfuse), the same helpers also carry the W3C trace context;
+see [SQS and SNS](#sqs-and-sns).
 
 IDs that auditry *generates* are always random UUID4s — opaque, never derived
 from user data. Inbound IDs are propagated verbatim (that is the point of

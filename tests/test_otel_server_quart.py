@@ -177,12 +177,41 @@ class TestServerSpans:
         await app.test_client().get(FILE_URL)
         assert len(otel.raw_server_spans()) == 1
 
+    async def test_self_instrumented_app_gets_exactly_one_span(self, otel):
+        app = add_routes(quart.Quart(__name__))
+        app.asgi_app = asgi.OpenTelemetryMiddleware(
+            app.asgi_app, exclude_spans=["receive", "send"], tracer_provider=otel.provider
+        )
+        app = auditry_quart.create_middleware(app, make_config())
+        await app.test_client().get(FILE_URL)
+        assert len(otel.raw_spans()) == 1
+
     async def test_instrument_server_off_creates_no_spans(self, otel):
         app = auditry_quart.create_middleware(
             add_routes(quart.Quart(__name__)), make_config(instrument_server=False)
         )
         await app.test_client().get(FILE_URL)
         assert otel.raw_spans() == []
+
+
+class TestSpanNamingFailure:
+    @pytest.fixture(autouse=True)
+    def broken_current_span(self, monkeypatch):
+        def explode():
+            raise RuntimeError("detail that must not be logged")
+
+        monkeypatch.setattr(quart_tracing, "get_current_span", explode)
+
+    async def test_production_keeps_serving(self, otel):
+        configure_logging(service="svc", environment="prod")
+        response = await traced_app().test_client().get(FILE_URL)
+        assert response.status_code == 200
+
+    async def test_production_warns_once(self, otel, log_lines):
+        configure_logging(service="svc", environment="prod")
+        await traced_app().test_client().get(FILE_URL)
+        (warning,) = [line for line in log_lines() if line["message"] == "tracing signal dropped"]
+        assert warning["operation"] == "quart_span_name"
 
 
 class TestScrubbing:

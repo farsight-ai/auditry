@@ -27,7 +27,7 @@ def instrument_quart(
     Call it after every other ``app.asgi_app`` wrapper, so the span is
     active in all of them.
     """
-    if isinstance(app.asgi_app, OpenTelemetryMiddleware | TracedUnlessExcluded):
+    if _already_traced(app.asgi_app):
         return
     traced = OpenTelemetryMiddleware(
         app.asgi_app,
@@ -39,6 +39,21 @@ def instrument_quart(
     )
     for signal in CONNECTION_STARTED_SIGNALS:
         signal.connect(_name_span_by_route, sender=app)
+
+
+def _already_traced(asgi_app: object) -> bool:
+    """Whether OpenTelemetry's middleware already wraps the app anywhere in its
+    chain of ASGI wrappers, followed through each one's ``app``. By the time
+    ``create_middleware`` instruments, QuartMiddleware's CorrelationIdMiddleware
+    sits outside a service's own instrumentation."""
+    seen: set[int] = set()
+    layer: object = asgi_app
+    while layer is not None and id(layer) not in seen:
+        if isinstance(layer, OpenTelemetryMiddleware | TracedUnlessExcluded):
+            return True
+        seen.add(id(layer))
+        layer = getattr(layer, "app", None)
+    return False
 
 
 async def _name_span_by_route(sender: Quart, **extra: object) -> None:

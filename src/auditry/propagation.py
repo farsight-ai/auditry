@@ -13,9 +13,10 @@ helpers here so the ID survives every boundary:
 - SQS/SNS: ``sqs_message_attributes()`` on send; ``bound_message_context()``
   around each received message, or ``bind_from_sqs_message()`` at a true edge.
 
-With the ``otel`` extra installed, the HTTP and SQS/SNS helpers also carry the
-W3C trace context (``traceparent``/``tracestate``), so a trace continues
-across the same boundaries.
+Whenever the OpenTelemetry API is importable (with the ``otel`` extra, or
+through a package such as Langfuse that depends on it), the HTTP and SQS/SNS
+helpers also carry the W3C trace context (``traceparent``/``tracestate``), so
+a trace continues across the same boundaries.
 
 IDs are always random UUID4s — opaque, never derived from user data — and
 services propagate an inbound ID rather than generating a fresh one
@@ -174,9 +175,10 @@ def outbound_headers(
     Also attach these to third-party API calls where the SDK allows custom
     headers/metadata, so vendor-side audit trails line up with your logs.
 
-    Inside a valid span (``otel`` extra installed), also carries
-    ``traceparent`` and, when non-empty, ``tracestate``, so the downstream
-    service continues the trace. ``baggage`` is never sent. A trace header
+    Inside a valid span, with the OpenTelemetry API importable (see the
+    module docstring), also carries ``traceparent`` and, when non-empty,
+    ``tracestate``, so the downstream service continues the trace. A third
+    party receives them too. ``baggage`` is never sent. A trace header
     already in ``extra`` (any letter case) is kept as given.
     """
     headers = dict(extra) if extra else {}
@@ -202,8 +204,9 @@ def sqs_message_attributes(
     )
     ```
 
-    Inside a valid span (``otel`` extra installed), also carries the
-    ``traceparent`` and ``tracestate`` attributes, unless that would exceed
+    Inside a valid span, with the OpenTelemetry API importable (see the
+    module docstring), also carries the ``traceparent`` and ``tracestate``
+    attributes, unless that would exceed
     the SQS limit of 10 attributes per message: then the trace attributes
     are skipped with one warning per process (``MessageAttributeLimitError``
     in strict mode). Attributes already in ``existing`` are never overwritten
