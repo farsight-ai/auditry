@@ -40,17 +40,16 @@ def scrub_span(span: ReadableSpan, policy: SpanScrubPolicy) -> ReadableSpan:
     for event in span.events:
         if is_dropped_event(event.name):
             continue
-        event_attributes = dict(event.attributes or {})
-        if event.name == EXCEPTION_EVENT_NAME:
-            exception_type = exception_type or event_attributes.get(EXCEPTION_TYPE_KEY)
+        is_exception = event.name == EXCEPTION_EVENT_NAME
+        event_attributes = event.attributes or {}
+        if is_exception:
             event_attributes = scrub_exception_event(event_attributes)
-        events.append(
-            Event(
-                event.name,
-                scrub_attributes(event_attributes, is_server=False, policy=policy),
-                event.timestamp,
-            )
-        )
+        event_attributes = scrub_attributes(event_attributes, is_server=False, policy=policy)
+        if is_exception:
+            # From the scrubbed map: exception.type is any caller-supplied
+            # string, not necessarily a class name.
+            exception_type = exception_type or event_attributes.get(EXCEPTION_TYPE_KEY)
+        events.append(Event(event.name, event_attributes, event.timestamp))
     links = [
         Link(link.context, scrub_attributes(link.attributes or {}, is_server=False, policy=policy))
         for link in span.links

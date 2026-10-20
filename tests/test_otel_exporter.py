@@ -50,6 +50,14 @@ class TestExceptions:
         assert status.status_code is trace.StatusCode.ERROR
         assert status.description == "ValueError"
 
+    def test_status_description_uses_the_scrubbed_exception_type(self, otel):
+        with otel.tracer.start_as_current_span("work") as span:
+            span.add_event("exception", {"exception.type": "Denied for jane@example.com"})
+            span.set_status(trace.Status(trace.StatusCode.ERROR, MESSAGE))
+        scrubbed = only(otel.scrubbed_spans())
+        assert scrubbed.status.description == f"Denied for {R}"
+        assert "jane@example.com" not in scrubbed.to_json()
+
     def test_status_description_without_an_exception_event(self, otel):
         with otel.tracer.start_as_current_span("work") as span:
             span.set_status(trace.Status(trace.StatusCode.ERROR, MESSAGE))

@@ -523,7 +523,7 @@ not touched.
 | Rule | What happens |
 | --- | --- |
 | Exception events | `exception.message` and `exception.stacktrace` are removed; `exception.type` and `exception.escaped` stay. |
-| Status description | Replaced by the exception type of the first exception event, or removed. The status code stays. |
+| Status description | Replaced by the first exception event's `exception.type` as scrubbed (email addresses redacted), or removed. The status code stays. |
 | User identity | Every `enduser.*` and `user.*` attribute is removed (`user_agent.*` stays). |
 | Database statements | Per `db_statement` (literals become `?` by default). A statement whose literals cannot be paired reliably, such as one with a backslash-escaped quote, is removed. `db.query.parameter.*` is always removed. |
 | GenAI content | Prompts, completions, input/output messages, system instructions, tool call arguments and results, tool definitions, retrieval query text and documents, and evaluation explanations are removed, as are `gen_ai.*` events. Model, usage, finish-reason and operation attributes stay. |
