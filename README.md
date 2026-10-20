@@ -452,7 +452,7 @@ Paths in `excluded_paths` get no span, and still get the request-ID header.
 |---|---|---|
 | `instrument_server` | `False` | Start a server span per request (see above). Leave off when the service instruments itself. |
 | `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern. |
-| `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
+| `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string (including PostgreSQL dollar-quoted) and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
 | `keep_client_address` | `False` | Keep the client IP address and port on server spans. |
 
 `additional_redaction_patterns` applies to spans too: to query parameter names

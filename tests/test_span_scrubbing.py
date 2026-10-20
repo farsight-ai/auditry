@@ -342,11 +342,27 @@ class TestDatabaseStatements:
         assert sanitize_sql(statement) == (expected or statement)
 
     @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("SELECT $$secret$$", "SELECT ?"),
+            ("SELECT $tag$a $$ b$tag$ AS x", "SELECT ? AS x"),
+            ("SELECT $q$\nmulti\nline$q$", "SELECT ?"),
+            ("SELECT $$it's$$ AS a, 'secret' AS b", "SELECT ? AS a, ? AS b"),
+            ("SELECT 'cost $$5' AS a, $1", "SELECT ? AS a, $1"),
+            ("SELECT v$session FROM a$$b$$", "SELECT v$session FROM a$$b$$"),
+        ],
+    )
+    def test_dollar_quoted_literals(self, statement, expected):
+        assert sanitize_sql(statement) == expected
+
+    @pytest.mark.parametrize(
         "statement",
         [
             r"SELECT 1 FROM t WHERE note = 'it\'s' AND ssn = 'secret'",
             r"SELECT 'C:\' FROM t WHERE ssn = 'secret'",
             "SELECT 1 FROM t WHERE ssn = 'unterminated",
+            "SELECT 1 FROM t WHERE ssn = $$unterminated",
+            "SELECT $a$secret$b$",
         ],
     )
     def test_ambiguous_literals_drop_the_statement(self, statement):

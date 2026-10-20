@@ -116,7 +116,14 @@ LANGFUSE_OPERATIONAL_KEYS = frozenset(
 # tried once rather than from every position inside it.
 _EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMAIL_BYTES = re.compile(_EMAIL.pattern.encode())
-_SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+# PostgreSQL dollar-quote delimiter, $$ or $tag$; a tag follows identifier
+# rules minus "$". Not part of an identifier, which may itself contain "$".
+_SQL_DOLLAR_DELIMITER = re.compile(r"(?<![\w$])\$(?P<tag>(?:[^\W\d]\w*)?)\$")
+# One alternation so the leftmost opener wins: a quote inside a dollar-quoted
+# string, or $$ inside a quoted one, is literal text.
+_SQL_STRING_LITERAL = re.compile(
+    r"'(?:[^']|'')*'|" + _SQL_DOLLAR_DELIMITER.pattern + r"(?s:.*?)\$(?P=tag)\$"
+)
 # Not part of an identifier (table2), a placeholder ($1) or a dotted name.
 _SQL_NUMERIC_LITERAL = re.compile(r"(?<![\w$.])\d+(?:\.\d+)?(?![\w.])")
 
@@ -253,18 +260,22 @@ def scrub_target(target: str, policy: SpanScrubPolicy, route: str | None = None)
 
 
 def sanitize_sql(statement: str) -> str | None:
-    """``db_statement="sanitize"``: string and numeric literals become ``?``.
-    Placeholders and identifiers are kept.
+    """``db_statement="sanitize"``: string literals (quoted and PostgreSQL
+    dollar-quoted) and numeric literals become ``?``. Placeholders and
+    identifiers are kept.
 
     Returns None when literal boundaries are ambiguous, so the statement is
     dropped rather than exported with a literal shifted into plain text: a
     backslash-escaped quote (an escape in some databases, an ordinary
-    character in others), or a quote still unpaired after sanitizing.
+    character in others), or a quote or dollar-quote delimiter still unpaired
+    after sanitizing.
     """
     if "\\'" in statement:
         return None
     sanitized = _SQL_NUMERIC_LITERAL.sub("?", _SQL_STRING_LITERAL.sub("?", statement))
-    return None if "'" in sanitized else sanitized
+    if "'" in sanitized or _SQL_DOLLAR_DELIMITER.search(sanitized):
+        return None
+    return sanitized
 
 
 def _is_sensitive_header(name: str, policy: SpanScrubPolicy) -> bool:
