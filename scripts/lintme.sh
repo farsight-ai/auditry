@@ -2,13 +2,16 @@
 #
 # lintme.sh -- the lint gate for auditry.
 #
-# Two languages, one gate. This is the same script the Lint workflow runs, so a
-# clean run here is a clean run on the pull request.
+# Python, shell and Markdown, one gate. This is the same script the Lint
+# workflow runs, so a clean run here is a clean run on the pull request.
 #
-#   Python   ruff check    lint; autofixes applied unless --check is given
-#            ruff format   formatting; rewritten in place unless --check
-#   Shell    shellcheck    lint; report only, it has no autofix
-#            shfmt         formatting; rewritten in place unless --check
+#   Python    ruff check        lint; autofixes applied unless --check is given
+#             ruff format       formatting; rewritten in place unless --check
+#   Shell     shellcheck        lint; report only, it has no autofix
+#             shfmt             formatting; rewritten in place unless --check
+#   Markdown  pymarkdown fix    autofixes for the rules that have one, unless
+#                               --check is given
+#             pymarkdown scan   lint; reports whatever fix could not resolve
 #
 # Within each language, lint runs before the format check, so a syntax-level
 # problem is never reported as a formatting one.
@@ -51,12 +54,17 @@ readonly PYPROJECT="${REPO_ROOT}/pyproject.toml"
 # inherits the padding column and cascades the indent off to the right.
 readonly SHFMT_FLAGS=(-i 4 -ci -bn)
 
+# Every *.md in the repo outside .gitignore'd paths. Rules and the remaining
+# exclusions are in pyproject.toml under [tool.pymarkdown].
+readonly MARKDOWN_PATHS=(-r --respect-gitignore .)
+
 APPLY_FIX=1
 UNSAFE_FIXES=0
 
 RUFF=""
 SHELLCHECK=""
 SHFMT=""
+PYMARKDOWN=""
 SHELL_FILES=()
 
 # Filled in by the steps below, printed by summary().
@@ -130,11 +138,13 @@ resolve_tools() {
     RUFF="$(resolve_tool ruff)"
     SHELLCHECK="$(resolve_tool shellcheck)"
     SHFMT="$(resolve_tool shfmt)"
+    PYMARKDOWN="$(resolve_tool pymarkdown)"
 
     ok "$("$RUFF" --version)"
     # The --version output is a multi-line banner; the number is its own field.
     ok "shellcheck $("$SHELLCHECK" --version | awk '/^version:/ { print $2 }')"
     ok "shfmt $("$SHFMT" --version)"
+    ok "pymarkdown $("$PYMARKDOWN" version)"
 }
 
 # One ruff version per repo (pyproject.toml's dev extra). A newer or older
@@ -267,6 +277,31 @@ format_shell() {
 }
 
 # ---------------------------------------------------------------------------
+# Markdown
+# ---------------------------------------------------------------------------
+
+lint_markdown() {
+    step "Markdown lint (pymarkdown)"
+
+    if [ "$APPLY_FIX" -eq 1 ]; then
+        # fix exits 3 when it rewrote a file and 0 when there was nothing to
+        # fix. It never reports what it cannot fix, so scan always follows.
+        local fix_status=0
+        "$PYMARKDOWN" fix "${MARKDOWN_PATHS[@]}" || fix_status=$?
+        if [ "$fix_status" -ne 0 ] && [ "$fix_status" -ne 3 ]; then
+            fail "pymarkdown fix failed (exit ${fix_status})"
+            return
+        fi
+    fi
+
+    if "$PYMARKDOWN" scan "${MARKDOWN_PATHS[@]}"; then
+        ok "no violations"
+    else
+        fail "pymarkdown reported violations"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 
 summary() {
     step "Summary"
@@ -299,6 +334,7 @@ main() {
     format_python
     lint_shell
     format_shell
+    lint_markdown
     summary
 }
 

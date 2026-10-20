@@ -69,6 +69,9 @@ dev = [
     # Homebrew locally and apt in CI, which drift.
     "shellcheck-py==0.11.0.1",
     "shfmt-py==4.2.0",
+    # Markdown lint. Pure Python with rules modeled on markdownlint's (same
+    # MD0xx ids), so it installs from uv.lock like the rest of the toolchain.
+    "pymarkdownlnt==0.9.40",
 ]
 
 [project.urls]
@@ -118,6 +121,20 @@ ignore = ["E501"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# Markdown lint, run by scripts/lintme.sh from the repository root.
+# https://pymarkdown.readthedocs.io/en/latest/advanced_configuration/
+[tool.pymarkdown]
+# GFM tables, so md013 can tell a table row from prose.
+extensions.markdown-tables.enabled = true
+# Prose wraps at 80 columns; a table row or a code line cannot be wrapped.
+plugins.md013.tables = false
+plugins.md013.code_blocks = false
+# The changelog repeats "Added" / "Fixed" under every release.
+plugins.md024.siblings_only = true
+# CLAUDE.md is a one-line "@AGENTS.md" import for Claude Code, so it has no
+# heading of its own.
+system.exclude_path = "CLAUDE.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

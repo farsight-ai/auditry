@@ -1335,13 +1335,16 @@ usable, and otherwise passes pytest's own exit code through.
 
 ### Linting and formatting
 
-One script covers both languages. Within each, lint runs before the format
-check, so a syntax-level problem is never reported as a formatting one.
+One script covers Python, shell and Markdown. Within each, lint runs before the
+format check, so a syntax-level problem is never reported as a formatting one.
+Markdown is the exception: `pymarkdown fix` applies the fixes it has, then
+`pymarkdown scan` reports whatever is left.
 
 | Language | Lint | Format |
 | --- | --- | --- |
 | Python | `ruff check` | `ruff format` |
 | Shell | `shellcheck` | `shfmt` |
+| Markdown | `pymarkdown scan` | `pymarkdown fix` (rules with a fix only) |
 
 ```bash
 ./scripts/lintme.sh             # apply autofixes, then format in place
@@ -1362,6 +1365,11 @@ files — the examples in this README are spaced and annotated by hand. Shell
 formatting is `shfmt -i 4 -ci -bn`, and `shellcheck` covers every `*.sh` in the
 repository, not only `scripts/`.
 
+[PyMarkdown](https://pymarkdown.readthedocs.io/)'s rules are modeled on
+markdownlint's (same `MD0xx` ids) and configured under `[tool.pymarkdown]`.
+Prose wraps at 80 columns; tables and code blocks are exempt. It lints every
+`*.md` outside `.gitignore` except `CLAUDE.md`.
+
 ### Continuous integration
 
 Two workflows run on every pull request, drafts included, and again when a draft
@@ -1369,7 +1377,7 @@ is marked ready for review:
 
 | Check | Runs | Covers |
 | --- | --- | --- |
-| `Lint` | `./scripts/lintme.sh --check` | ruff, shellcheck, shfmt |
+| `Lint` | `./scripts/lintme.sh --check` | ruff, shellcheck, shfmt, pymarkdown |
 | `Tests` | `./scripts/runtests.sh` | pytest |
 
 Both install with `uv sync --all-extras --locked`, which fails if `uv.lock` has
