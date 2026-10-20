@@ -172,6 +172,7 @@ class TestClientAndInternalSpans:
             "db.operation.name": "SELECT",
             "db.query.text": "SELECT * FROM t WHERE email = 'jane@x.com' AND age > 30",
             "db.query.parameter.0": "jane",
+            "db.statement.parameters": "('Jane Doe',)",
             "gen_ai.request.model": "claude-opus-5-5",
             "gen_ai.input.messages": "[]",
         }

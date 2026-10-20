@@ -373,7 +373,12 @@ class TestDatabaseStatements:
 
     @pytest.mark.parametrize("key", ["db.statement", "db.query.text"])
     def test_modes(self, key):
-        attributes = {key: self.STATEMENT, "db.query.parameter.0": "jane", "db.system": "pg"}
+        attributes = {
+            key: self.STATEMENT,
+            "db.query.parameter.0": "jane",
+            "db.statement.parameters": "('Jane Doe', 'q3 board deck')",
+            "db.system": "pg",
+        }
         assert client(attributes) == {key: self.SANITIZED, "db.system": "pg"}
         drop = SpanScrubPolicy(db_statement="drop")
         assert client(attributes, drop) == {"db.system": "pg"}

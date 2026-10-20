@@ -93,6 +93,8 @@ IDENTITY_PREFIXES = ("enduser.", "user.")
 
 DB_STATEMENT_KEYS = frozenset({"db.statement", "db.query.text"})
 DB_PARAMETER_PREFIX = "db.query.parameter."
+# Where the dbapi, psycopg and asyncpg instrumentations put captured parameters.
+DB_PARAMETERS_KEY = "db.statement.parameters"
 
 # GenAI attributes carrying prompts, responses or retrieved content, from
 # https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/
@@ -330,7 +332,7 @@ def _remove_identity(attributes: _Attributes) -> None:
 def _scrub_db_statements(attributes: _Attributes, mode: DbStatementMode) -> None:
     """Database statements per ``db_statement``; query parameters always go."""
     for key in list(attributes):
-        if key.startswith(DB_PARAMETER_PREFIX):
+        if key == DB_PARAMETERS_KEY or key.startswith(DB_PARAMETER_PREFIX):
             del attributes[key]
         elif key in DB_STATEMENT_KEYS and mode != KEEP_DB_STATEMENT:
             value = attributes[key]

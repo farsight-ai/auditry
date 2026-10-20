@@ -552,7 +552,7 @@ not touched.
 | Exception events | `exception.message` and `exception.stacktrace` are removed; `exception.type` and `exception.escaped` stay. |
 | Status description | Replaced by the first exception event's `exception.type` as scrubbed (email addresses redacted), or removed. The status code stays. |
 | User identity | Every `enduser.*` and `user.*` attribute is removed (`user_agent.*` stays). |
-| Database statements | Per `db_statement` (literals become `?` by default). A statement whose literals cannot be paired reliably, such as one with a backslash-escaped quote, is removed. `db.query.parameter.*` is always removed. |
+| Database statements | Per `db_statement` (literals become `?` by default). A statement whose literals cannot be paired reliably, such as one with a backslash-escaped quote, is removed. Query parameters (`db.query.parameter.*`, and `db.statement.parameters` from `capture_parameters=True`) are always removed. |
 | GenAI content | Prompts, completions, input/output messages, system instructions, tool call arguments and results, tool definitions, retrieval query text and documents, and evaluation explanations are removed, as are `gen_ai.*` events. Model, usage, finish-reason and operation attributes stay. |
 | Query strings | In `url.full`, `http.url`, `url.query` and `http.target`, every value not in `query_param_allowlist` becomes `[REDACTED]`; names stay. A query that does not parse (for example `?q3-deck.pdf`) is redacted whole. Full URLs also lose `user:password@` and any `#fragment`, and `url.fragment` is removed. |
 | Server paths | On server spans with a route, the path in `url.path`, `http.target`, `url.full` and `http.url` becomes the route template. |
