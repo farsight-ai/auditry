@@ -12,7 +12,7 @@ import functools
 import importlib.util
 from collections.abc import Callable, Mapping
 from contextvars import Token
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
 import structlog
 
@@ -51,6 +51,10 @@ CORRELATION_ID_ATTRIBUTE = "correlation_id"
 
 # Tracing failure warnings go through this structlog logger.
 OTEL_LOGGER_NAME = "auditry.otel"
+
+# The per-message child spans OpenTelemetry's ASGI middleware would add under
+# every server span; auditry's server instrumentation leaves them out.
+EXCLUDED_ASGI_SPANS: tuple[Literal["receive", "send"], ...] = ("receive", "send")
 
 _propagator = TraceContextTextMapPropagator() if TraceContextTextMapPropagator is not None else None
 

@@ -1,7 +1,8 @@
 import warnings
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+from .span_scrubbing import DEFAULT_DB_STATEMENT_MODE, DbStatementMode
 
 # Health/liveness probes are excluded from request/response logging by
 # default (they still get the correlation-ID header). A load balancer pings
@@ -64,8 +65,8 @@ class TracingConfig(BaseModel):
             "[REDACTED]. Empty by default."
         ),
     )
-    db_statement: Literal["sanitize", "drop", "keep"] = Field(
-        default="sanitize",
+    db_statement: DbStatementMode = Field(
+        default=DEFAULT_DB_STATEMENT_MODE,
         description=(
             "How spans export db.statement / db.query.text: 'sanitize' replaces "
             "string and numeric literals with '?', 'drop' removes the attribute, "

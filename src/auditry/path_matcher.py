@@ -76,7 +76,7 @@ def excluded_paths_to_url_patterns(
 ) -> list[str]:
     """
     Translate ``excluded_paths`` into OpenTelemetry ``excluded_urls`` regexes,
-    so server spans skip the same paths request logging skips.
+    so FastAPI server spans skip the same paths request logging skips.
 
     OpenTelemetry matches each regex with ``re.search`` against
     ``scheme://host`` plus the path, with no query and no method. The dict
@@ -102,7 +102,10 @@ def excluded_paths_to_url_patterns(
             alternatives.append(fnmatch.translate(pattern))
         if pattern.endswith("/"):
             alternatives.append(re.escape(pattern))
-        # The host comes from the client's Host header; the lookahead pins the
-        # match to the first "/" after it, so no host can satisfy a pattern.
+        # The host comes from the client's Host header, and the lookahead pins
+        # the match to the first "/" after the scheme. That is the start of the
+        # path unless the Host value itself contains "/", so such a client can
+        # line a multi-segment, wildcard or prefix pattern up with part of its
+        # Host value and leave its own request untraced.
         url_patterns.append("^[^:/]+://[^/]*(?=/)(?:" + "|".join(alternatives) + ")")
     return url_patterns

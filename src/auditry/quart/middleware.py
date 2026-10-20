@@ -4,7 +4,7 @@ import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from quart import Quart, Request, Response, request
-from quart.signals import got_request_exception
+from quart.signals import got_request_exception, request_started
 from quart.wrappers.response import IterableBody
 
 from ..core import BaseMiddleware, RequestResponseLogger
@@ -42,13 +42,16 @@ class QuartMiddleware(BaseMiddleware):
 
     def _register_hooks(self):
         """Register Quart before_request and after_request hooks, and the
-        unhandled-exception receiver."""
+        request-started and unhandled-exception receivers."""
+
+        # request_started fires before any before_request hook, so an app
+        # hook that returns a response or aborts cannot skip it. The signal is
+        # process-wide: sender= limits it to this app's requests.
+        request_started.connect(_record_span_correlation_id, sender=self.app)
 
         @self.app.before_request
         async def capture_request_start():
             """Hook for request start."""
-            set_span_correlation_id(get_correlation_id())
-
             # Early exit for excluded paths
             if should_exclude_path(request.path, request.method, self.config.excluded_paths):
                 request.observability_excluded = True
@@ -206,6 +209,10 @@ class QuartMiddleware(BaseMiddleware):
             "Quart uses hooks instead of middleware chain. "
             "Use the QuartMiddleware constructor to register hooks."
         )
+
+
+async def _record_span_correlation_id(sender: Quart, **extra: object) -> None:
+    set_span_correlation_id(get_correlation_id())
 
 
 def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:

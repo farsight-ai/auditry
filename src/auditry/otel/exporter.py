@@ -8,6 +8,7 @@ from opentelemetry.trace import Link, SpanKind, Status, StatusCode
 
 from ..span_scrubbing import (
     EXCEPTION_EVENT_NAME,
+    EXCEPTION_TYPE_KEY,
     SpanScrubPolicy,
     get_span_scrub_policy,
     is_dropped_event,
@@ -41,7 +42,7 @@ def scrub_span(span: ReadableSpan, policy: SpanScrubPolicy) -> ReadableSpan:
             continue
         event_attributes = dict(event.attributes or {})
         if event.name == EXCEPTION_EVENT_NAME:
-            exception_type = exception_type or event_attributes.get("exception.type")
+            exception_type = exception_type or event_attributes.get(EXCEPTION_TYPE_KEY)
             event_attributes = scrub_exception_event(event_attributes)
         events.append(
             Event(

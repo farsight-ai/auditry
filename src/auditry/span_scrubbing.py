@@ -1,10 +1,11 @@
 """
 Span scrubbing rules: what an exported span may carry.
 
-Traces are a general-access destination, so only system-generated
-operational values (timings, status codes, route templates, random IDs,
-error types) survive export. Credentials, PII, customer content, exception
-messages and stack traces do not. The rules are pure functions over
+Traces are a general-access destination, so the rules aim to let only
+system-generated operational values (timings, status codes, route templates,
+random IDs, error types) survive export. They remove credentials, PII,
+exception messages, stack traces and the customer content they recognize by
+attribute name or value shape. The rules are pure functions over
 attribute maps and import nothing from OpenTelemetry;
 ``auditry.otel.ScrubbingSpanExporter`` applies them to every exported span.
 The README's "Tracing (OpenTelemetry)" section lists what each rule removes.
@@ -15,7 +16,7 @@ import re
 import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from .redaction import REDACTED_VALUE, SensitiveDataRedactor
 
@@ -37,9 +38,20 @@ __all__ = [
     "redact_emails",
 ]
 
-DB_STATEMENT_MODES = ("sanitize", "drop", "keep")
+DbStatementMode = Literal["sanitize", "drop", "keep"]
+DB_STATEMENT_MODES: tuple[DbStatementMode, ...] = get_args(DbStatementMode)
+DEFAULT_DB_STATEMENT_MODE: DbStatementMode = "sanitize"
+
+HTTP_ROUTE_KEY = "http.route"
+URL_PATH_KEY = "url.path"
+HTTP_METHOD_KEY = "http.request.method"
+# The older semconv name, still emitted by some instrumentations.
+LEGACY_HTTP_METHOD_KEY = "http.method"
+# The method semconv records for a verb outside the known set.
+OTHER_METHOD = "_OTHER"
 
 EXCEPTION_EVENT_NAME = "exception"
+EXCEPTION_TYPE_KEY = "exception.type"
 EXCEPTION_DETAIL_KEYS = frozenset({"exception.message", "exception.stacktrace"})
 
 URL_KEYS = frozenset({"url.full", "http.url", "url.query", "http.target"})
@@ -134,7 +146,7 @@ class SpanScrubPolicy:
 
     query_param_allowlist: frozenset[str] = frozenset()
     redaction_patterns: tuple[str, ...] = ()
-    db_statement: str = "sanitize"
+    db_statement: DbStatementMode = DEFAULT_DB_STATEMENT_MODE
     keep_client_address: bool = False
 
     def __post_init__(self) -> None:
@@ -341,8 +353,8 @@ def _scrub_urls(attributes: _Attributes, policy: SpanScrubPolicy, route: str | N
             attributes[key] = scrub_target(value, policy, route)
         else:
             attributes[key] = scrub_query(value, policy)
-    if route and "url.path" in attributes:
-        attributes["url.path"] = route
+    if route and URL_PATH_KEY in attributes:
+        attributes[URL_PATH_KEY] = route
 
 
 def _remove_client_address(attributes: _Attributes) -> None:
@@ -370,7 +382,7 @@ def scrub_attributes(
     _scrub_db_statements(scrubbed, policy.db_statement)
     _remove_genai_content(scrubbed)
     _remove_langfuse_content(scrubbed)
-    route = scrubbed.get("http.route") if is_server else None
+    route = scrubbed.get(HTTP_ROUTE_KEY) if is_server else None
     _scrub_urls(scrubbed, policy, route if isinstance(route, str) else None)
     if is_server and not policy.keep_client_address:
         _remove_client_address(scrubbed)
@@ -389,10 +401,10 @@ def scrub_span_name(name: str, attributes: Mapping[str, Any], *, is_server: bool
     cut at ``?`` and has email addresses redacted. ``attributes`` are the
     span's attributes, scrubbed or not: the method and route survive."""
     if is_server:
-        method = attributes.get("http.request.method") or attributes.get("http.method")
+        method = attributes.get(HTTP_METHOD_KEY) or attributes.get(LEGACY_HTTP_METHOD_KEY)
         if isinstance(method, str) and method:
-            method = "HTTP" if method == "_OTHER" else method
-            route = attributes.get("http.route")
+            method = "HTTP" if method == OTHER_METHOD else method
+            route = attributes.get(HTTP_ROUTE_KEY)
             name = f"{method} {route}" if isinstance(route, str) and route else method
     return _redact_emails_in_text(name.split("?", 1)[0])
 

@@ -21,12 +21,14 @@ FILE_URL = "/files/q3-board-deck.pdf?email=jane@example.com&token=abc&page=2"
 MESSAGE = "cannot open q3.pdf for jane@example.com"
 
 
-def make_config(instrument_server=True, **tracing):
+def make_config(instrument_server=True, excluded_paths=None, **tracing):
+    kwargs = {} if excluded_paths is None else {"excluded_paths": excluded_paths}
     return ObservabilityConfig(
         service_name="svc",
         log_request_body=False,
         log_response_body=False,
         tracing={"instrument_server": instrument_server, **tracing},
+        **kwargs,
     )
 
 
@@ -70,6 +72,14 @@ def traced_app(**tracing):
     )
 
 
+def guarded_app(guard):
+    """An app whose own before_request hook, registered before
+    create_middleware, rejects every request."""
+    app = add_routes(quart.Quart(__name__))
+    app.before_request(guard)
+    return auditry_quart.create_middleware(app, make_config())
+
+
 async def body_of(response):
     return "".join([chunk.decode() async for chunk in response.response])
 
@@ -99,6 +109,35 @@ class TestServerSpans:
         assert response.status_code == 200
         assert response.headers.getlist("X-Request-ID")
         assert otel.raw_spans() == []
+
+    async def test_method_specific_exclusion(self, otel):
+        client = traced_app(excluded_paths={"GET": ["/regular"]}).test_client()
+        await client.get("/regular")
+        assert otel.raw_spans() == []
+        await client.get(FILE_URL)
+        assert len(otel.raw_server_spans()) == 1
+
+    async def test_host_header_cannot_match_an_excluded_path(self, otel):
+        client = traced_app(excluded_paths=["/stream*"]).test_client()
+        response = await client.get(FILE_URL, headers={"Host": "example.com/stream"})
+        assert response.status_code == 200
+        (span,) = otel.raw_server_spans()
+        assert span.name == "GET /files/<name>"
+
+    @pytest.mark.parametrize("reject", ["return", "abort"])
+    async def test_rejecting_app_hook_still_gets_route_and_correlation_id(self, otel, reject):
+        async def guard():
+            if reject == "abort":
+                quart.abort(403)
+            return {"error": "forbidden"}, 403
+
+        response = await guarded_app(guard).test_client().get(FILE_URL)
+        assert response.status_code == 403
+        (span,) = otel.scrubbed_server_spans()
+        assert span.name == "GET /files/<name>"
+        assert span.attributes["http.target"] == "/files/<name>"
+        assert span.attributes["correlation_id"] == response.headers.getlist("X-Request-ID")[0]
+        assert "q3-board-deck" not in span.to_json()
 
     async def test_log_line_carries_the_span_trace_id(self, otel, log_lines):
         configure_logging(service="svc")
