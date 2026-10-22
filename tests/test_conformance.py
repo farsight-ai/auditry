@@ -9,7 +9,6 @@ conformance/README.md documents the case format and the placeholders.
 
 import io
 import json
-import logging
 import os
 import re
 from collections.abc import Iterator, Mapping
@@ -28,12 +27,9 @@ from auditry.logging_config import (
     _STRICT_ENV,
     NON_PRODUCTION_ENVIRONMENTS,
     NON_PRODUCTION_PREFIXES,
-    _set_config_service,
-    _set_strict,
     configure_logging,
     get_logger,
     is_strict,
-    set_trace_handler,
 )
 from auditry.metrics import (
     _EMF_MAX_KEYS_PER_DIMENSION_SET,
@@ -45,6 +41,7 @@ from auditry.metrics import (
 )
 from auditry.redaction import DEFAULT_REDACTION_PATTERNS, REDACTED_VALUE, redact_data
 from auditry.tracing import TRACE_LOG_FIELDS
+from tests.process_state import reset_process_state
 
 CONFORMANCE_DIR = Path(__file__).resolve().parent.parent / "conformance"
 CONTRACT_PATH = CONFORMANCE_DIR / "contract.json"
@@ -57,6 +54,8 @@ DURATION_MS_PLACEHOLDER = "<duration-ms>"
 ISO_8601_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|\+00:00)$")
 # The metric dependency_call() times; its value is a measured duration.
 DEPENDENCY_LATENCY_METRIC = "Latency"
+# What a case may list in "requires"; conformance/README.md says what each means.
+CASE_REQUIREMENTS = frozenset({"integral-float"})
 
 # Every variable a case may read. A case starts with all of them unset, so the
 # developer's or the CI runner's environment never leaks into an expectation.
@@ -101,19 +100,6 @@ def build_contract() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _reset_process_state() -> None:
-    """Production policy, nothing bound, nothing configured."""
-    correlation_id.set(None)
-    structlog.contextvars.clear_contextvars()
-    set_trace_handler(None)
-    _set_config_service(None)
-    _set_strict(False)
-    structlog.reset_defaults()
-    root = logging.getLogger()
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
-
-
 @contextmanager
 def _case_environment(overrides: Mapping[str, str]) -> Iterator[None]:
     """Every variable in CASE_ENVIRONMENT_VARIABLES unset except the overrides."""
@@ -132,9 +118,19 @@ def _case_environment(overrides: Mapping[str, str]) -> Iterator[None]:
                 os.environ[name] = value
 
 
+class _CaseError(Exception):
+    """Base of every exception a case raises by name."""
+
+
 def _error_class(name: str) -> type[Exception]:
     """An exception class named as the case names it, so error_type has a known value."""
-    return type(name, (Exception,), {})
+    return type(name, (_CaseError,), {})
+
+
+# What auditry raises, and what a case makes a wrapped call raise. Anything else
+# (a KeyError from a misspelled field, an unknown op) is a malformed case: it must
+# fail the run, not be regenerated into an expected "raises".
+_EXPECTED_RAISES = (AuditryError, TypeError, _CaseError)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +251,7 @@ def run_metrics(spec: dict[str, Any]) -> dict[str, Any]:
             sink=sink,
             strict=spec.get("strict", False),
         )
-    except (AuditryError, TypeError) as exc:
+    except _EXPECTED_RAISES as exc:
         return {"records": [], "raises": type(exc).__name__}
 
     result: dict[str, Any] = {"records": []}
@@ -264,7 +260,7 @@ def run_metrics(spec: dict[str, Any]) -> dict[str, Any]:
             start = sink.tell()
             try:
                 _call_metrics(metrics, call)
-            except Exception as exc:
+            except _EXPECTED_RAISES as exc:
                 result["raises"] = type(exc).__name__
             for line in sink.getvalue()[start:].splitlines():
                 record = _normalize_record(json.loads(line))
@@ -293,11 +289,11 @@ RUNNERS = {
 
 
 def run_case(case: dict[str, Any]) -> Any:
-    _reset_process_state()
+    reset_process_state()
     try:
         return RUNNERS[case["kind"]](case["input"])
     finally:
-        _reset_process_state()
+        reset_process_state()
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +328,15 @@ def test_contract_matches_the_code() -> None:
 def test_case_names_are_unique() -> None:
     names = [case["name"] for case in CASES]
     assert len(names) == len(set(names))
+
+
+def test_case_requirements_are_known() -> None:
+    unknown = {
+        case["name"]: case["requires"]
+        for case in CASES
+        if not set(case.get("requires", [])) <= CASE_REQUIREMENTS
+    }
+    assert unknown == {}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case["name"] for case in CASES])

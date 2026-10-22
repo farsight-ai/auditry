@@ -13,17 +13,19 @@ Neither file ships in the wheel.
 - [Regenerating](#regenerating)
 - [Cases](#cases)
 - [Placeholders](#placeholders)
+- [Dimension values](#dimension-values)
 - [Using it from a port](#using-it-from-a-port)
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| `contract.json` | The tables a port reads rather than restates: redaction patterns and marker, forbidden dimension patterns, limits, reserved record keys, non-production environment names, the environment variables auditry reads |
+| `contract.json` | The tables a port reads rather than restates: redaction patterns and marker, forbidden dimension patterns, limits, reserved record keys, non-production environment names, the `AUDITRY_*` environment variables |
 | `vectors.json` | Cases: an input and the output auditry produces for it |
 
 Names that appear only as literals in the code (`Service`, `Dependency`,
-`Latency`, the level names, `message`, `metric dropped`) are not in
+`Latency`, the level names, `message`, `metric dropped`, and the
+`SERVICE_NAME`, `SERVICE_VERSION` and `ENVIRONMENT` variables) are not in
 `contract.json`. The vectors pin them.
 
 ## Regenerating
@@ -40,9 +42,11 @@ changed expectation is a change every port has to make.
 
 ## Cases
 
-Every case has a `name`, a `kind`, an `input` and an `expected` output. A case
-starts with `SERVICE_NAME`, `SERVICE_VERSION`, `ENVIRONMENT`, `AUDITRY_STRICT`
-and `AUDITRY_FULL_TRACEBACKS` unset, nothing configured and nothing bound.
+Every case has a `name`, a `kind`, an `input` and an `expected` output, and
+optionally `requires`: what a port must be able to represent to run it (see
+[Dimension values](#dimension-values)). A case starts with `SERVICE_NAME`,
+`SERVICE_VERSION`, `ENVIRONMENT`, `AUDITRY_STRICT` and
+`AUDITRY_FULL_TRACEBACKS` unset, nothing configured and nothing bound.
 
 | Kind | Input | Expected |
 | --- | --- | --- |
@@ -76,6 +80,26 @@ Values that differ on every run are replaced before comparison:
 
 A value that is malformed stays as written, so the comparison fails on it.
 
+## Dimension values
+
+A boolean or number dimension value becomes the string Python's `str()` writes
+for it. A port writes the same string, so a value is the same CloudWatch series
+whichever language recorded it.
+
+| Value | Written |
+| --- | --- |
+| boolean | `True`, `False` |
+| integer | its decimal digits: `3`, `-12` |
+| float | the shortest digits that read back as the same float: `0.5`, `0.0001`. A float with no fractional part keeps `.0`: `3.0`. A magnitude below `1e-4`, or `1e16` and above, is in exponent form with a sign and at least two exponent digits: `1e-05`, `2.5e-07`, `1e+16` |
+| infinity, NaN | `inf`, `-inf`, `nan` |
+
+JSON does not carry every distinction Python makes. JavaScript has one number
+type, so its `JSON.parse` reads `3.0` as `3` and a JavaScript port cannot tell
+a float with no fractional part from an integer. A case that needs one lists
+`integral-float` in `requires`. Infinity and NaN are not valid JSON, and
+JavaScript cannot hold an integer beyond 2^53 - 1 exactly, so no case covers
+them.
+
 ## Using it from a port
 
 1. Vendor both files at a pinned commit of this repository, and check in CI
@@ -83,4 +107,5 @@ A value that is malformed stays as written, so the comparison fails on it.
 2. Read the tables from `contract.json`.
 3. Run every case in `vectors.json` through the port, apply the placeholders,
    and compare with `expected`. JSON objects compare without regard to key
-   order.
+   order. Skip a case whose `requires` names something the port cannot
+   represent.

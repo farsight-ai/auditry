@@ -1179,7 +1179,8 @@
             "name": "Requests",
             "dimensions": {
               "Attempt": 3,
-              "Cold": true
+              "Cold": true,
+              "Warm": false
             }
           }
         ]
@@ -1196,7 +1197,8 @@
                     [
                       "Service",
                       "Attempt",
-                      "Cold"
+                      "Cold",
+                      "Warm"
                     ]
                   ],
                   "Metrics": [
@@ -1211,6 +1213,117 @@
             "Service": "conformance-svc",
             "Attempt": "3",
             "Cold": "True",
+            "Warm": "False",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-values-fractional",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Half": 0.5,
+              "Negative": -1.25,
+              "FixedFloor": 0.0001,
+              "Exponent": 1e-05,
+              "SmallExponent": 2.5e-07
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Half",
+                      "Negative",
+                      "FixedFloor",
+                      "Exponent",
+                      "SmallExponent"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Half": "0.5",
+            "Negative": "-1.25",
+            "FixedFloor": "0.0001",
+            "Exponent": "1e-05",
+            "SmallExponent": "2.5e-07",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-values-integral-float",
+      "kind": "metrics",
+      "requires": [
+        "integral-float"
+      ],
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Whole": 3.0,
+              "Large": 1e+16
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Whole",
+                      "Large"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Whole": "3.0",
+            "Large": "1e+16",
             "Requests": 1
           }
         ]
