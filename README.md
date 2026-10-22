@@ -34,6 +34,7 @@ business event extraction, and sensitive data redaction.
 - [Development](#development)
   - [Local setup](#local-setup)
   - [Running tests](#running-tests)
+  - [Conformance vectors](#conformance-vectors)
   - [Linting and formatting](#linting-and-formatting)
   - [Continuous integration](#continuous-integration)
 - [License](#license)
@@ -1355,6 +1356,18 @@ The suite imports `auditry` as an installed package, so the script verifies the
 interpreter and the install before pytest starts rather than letting a missing
 install surface as a collection error. It exits 3 if the environment is not
 usable, and otherwise passes pytest's own exit code through.
+
+### Conformance vectors
+
+`conformance/` records auditry's log and metric behavior as data, for ports to
+other languages to test against. The suite fails when the code and the vectors
+disagree; after an intended change, regenerate them:
+
+```bash
+.venv/bin/python -m tests.test_conformance
+```
+
+See [conformance/README.md](conformance/README.md).
 
 ### Linting and formatting
 

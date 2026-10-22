@@ -1,18 +1,13 @@
 """Shared fixtures. None are autouse: a module opts in by naming them."""
 
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
-import structlog
-from asgi_correlation_id import correlation_id
 
-from auditry.logging_config import _set_config_service, _set_strict, set_trace_handler
-from auditry.propagation import _set_correlation_header
 from auditry.span_scrubbing import set_span_scrub_policy
-from auditry.tracing import _reset_warnings
+from tests.process_state import reset_process_state
 
 
 @dataclass
@@ -85,23 +80,9 @@ def clean_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Production policy, nothing bound, nothing configured, before and after."""
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("AUDITRY_STRICT", raising=False)
-
-    def reset() -> None:
-        correlation_id.set(None)
-        structlog.contextvars.clear_contextvars()
-        set_trace_handler(None)
-        _set_config_service(None)
-        _set_correlation_header(None)
-        _set_strict(False)
-        _reset_warnings()
-
-    reset()
+    reset_process_state()
     yield
-    reset()
-    structlog.reset_defaults()
-    root = logging.getLogger()
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
+    reset_process_state()
 
 
 @pytest.fixture

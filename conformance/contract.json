@@ -1,0 +1,103 @@
+{
+  "log": {
+    "correlation_id_field": "correlation_id",
+    "trace_fields": [
+      "trace_id",
+      "span_id"
+    ],
+    "full_tracebacks_environment_variable": "AUDITRY_FULL_TRACEBACKS"
+  },
+  "strict": {
+    "environment_variable": "AUDITRY_STRICT",
+    "non_production_environments": [
+      "ci",
+      "dev",
+      "development",
+      "local",
+      "plat-sandbox",
+      "qa",
+      "sandbox",
+      "stage",
+      "staging",
+      "test",
+      "testing"
+    ],
+    "non_production_prefixes": [
+      "local-",
+      "dev-"
+    ]
+  },
+  "redaction": {
+    "patterns": [
+      "password",
+      "passwd",
+      "token",
+      "api_key",
+      "apikey",
+      "secret",
+      "ssn",
+      "social_security_number",
+      "credit_card",
+      "creditcard",
+      "authorization",
+      "x-api-key",
+      "cookie",
+      "set-cookie",
+      "jwt",
+      "bearer",
+      "otp",
+      "one_time_password",
+      "access_key",
+      "private_key",
+      "signature",
+      "credential",
+      "x-auth",
+      "x-amz-security-token",
+      "proxy-authorization",
+      "csrf",
+      "xsrf"
+    ],
+    "marker": "[REDACTED]"
+  },
+  "metrics": {
+    "forbidden_dimension_patterns": [
+      "userid",
+      "username",
+      "useremail",
+      "email",
+      "filename",
+      "filepath",
+      "objectkey",
+      "document",
+      "prompt",
+      "completion",
+      "message",
+      "title",
+      "query",
+      "ticker",
+      "ssn",
+      "phone",
+      "address",
+      "firstname",
+      "lastname",
+      "fullname"
+    ],
+    "max_dimensions": 8,
+    "max_dimension_value_length": 128,
+    "max_keys_per_dimension_set": 30,
+    "reserved_record_keys": [
+      "_aws",
+      "correlation_id",
+      "environment",
+      "event",
+      "exc_info",
+      "level",
+      "message",
+      "service",
+      "span_id",
+      "timestamp",
+      "trace_id",
+      "version"
+    ]
+  }
+}

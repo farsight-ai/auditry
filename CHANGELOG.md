@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `conformance/`: auditry's log lines, metric records, redaction and strict
+  mode recorded as data (`contract.json`, `vectors.json`), for ports to other
+  languages to test against. `tests/test_conformance.py` fails when the code
+  and the vectors disagree. Not in the wheel; in the sdist, for the tests.
+
 ## 0.6.0 (2026-10-19)
 
 Optional OpenTelemetry tracing: trace IDs on log lines, W3C trace context

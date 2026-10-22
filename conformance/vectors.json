@@ -1,0 +1,2538 @@
+{
+  "cases": [
+    {
+      "name": "redact-nested",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "user": {
+            "password": "p",
+            "name": "n"
+          },
+          "items": [
+            {
+              "api_key": "k"
+            },
+            {
+              "ok": 1
+            }
+          ],
+          "Authorization": "Bearer x",
+          "count": 3
+        }
+      },
+      "expected": {
+        "user": {
+          "password": "[REDACTED]",
+          "name": "n"
+        },
+        "items": [
+          {
+            "api_key": "[REDACTED]"
+          },
+          {
+            "ok": 1
+          }
+        ],
+        "Authorization": "[REDACTED]",
+        "count": 3
+      }
+    },
+    {
+      "name": "redact-substring-match",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "user_password": "p",
+          "refresh_token_hash": "h",
+          "had_credential": true,
+          "sid": "s"
+        }
+      },
+      "expected": {
+        "user_password": "[REDACTED]",
+        "refresh_token_hash": "[REDACTED]",
+        "had_credential": "[REDACTED]",
+        "sid": "s"
+      }
+    },
+    {
+      "name": "redact-case-insensitive",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "X-API-KEY": "k",
+          "Set-Cookie": "c",
+          "Content-Type": "application/json"
+        }
+      },
+      "expected": {
+        "X-API-KEY": "[REDACTED]",
+        "Set-Cookie": "[REDACTED]",
+        "Content-Type": "application/json"
+      }
+    },
+    {
+      "name": "redact-additional-patterns",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "session_id": "s",
+          "other": "o"
+        },
+        "additional_patterns": [
+          "SESSION_ID"
+        ]
+      },
+      "expected": {
+        "session_id": "[REDACTED]",
+        "other": "o"
+      }
+    },
+    {
+      "name": "redact-list-root",
+      "kind": "redact",
+      "input": {
+        "data": [
+          {
+            "secret": "s"
+          },
+          "plain",
+          1,
+          null
+        ]
+      },
+      "expected": [
+        {
+          "secret": "[REDACTED]"
+        },
+        "plain",
+        1,
+        null
+      ]
+    },
+    {
+      "name": "redact-primitive",
+      "kind": "redact",
+      "input": {
+        "data": "a password in a string is not a key"
+      },
+      "expected": "a password in a string is not a key"
+    },
+    {
+      "name": "strict-unset",
+      "kind": "strict",
+      "input": {},
+      "expected": false
+    },
+    {
+      "name": "strict-prod",
+      "kind": "strict",
+      "input": {
+        "environment": "prod"
+      },
+      "expected": false
+    },
+    {
+      "name": "strict-dev",
+      "kind": "strict",
+      "input": {
+        "environment": "dev"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-trimmed-and-lowercased",
+      "kind": "strict",
+      "input": {
+        "environment": " Sandbox "
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-plat-sandbox",
+      "kind": "strict",
+      "input": {
+        "environment": "plat-sandbox"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-plat-dev-is-production-safe",
+      "kind": "strict",
+      "input": {
+        "environment": "plat-dev"
+      },
+      "expected": false
+    },
+    {
+      "name": "strict-customer-prod",
+      "kind": "strict",
+      "input": {
+        "environment": "customer-prod"
+      },
+      "expected": false
+    },
+    {
+      "name": "strict-dev-prefix",
+      "kind": "strict",
+      "input": {
+        "environment": "dev-feature-x"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-local-prefix",
+      "kind": "strict",
+      "input": {
+        "environment": "local-tess"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-flag-1",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "1",
+        "environment": "prod"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-flag-true",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "TRUE",
+        "environment": "prod"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-flag-yes",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "yes"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-flag-0-overrides-dev",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "0",
+        "environment": "dev"
+      },
+      "expected": false
+    },
+    {
+      "name": "strict-flag-unrecognized-is-off",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "on",
+        "environment": "dev"
+      },
+      "expected": false
+    },
+    {
+      "name": "strict-flag-empty-is-ignored",
+      "kind": "strict",
+      "input": {
+        "environment_variable": "",
+        "environment": "dev"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-explicit-true-wins",
+      "kind": "strict",
+      "input": {
+        "explicit": true,
+        "environment_variable": "0",
+        "environment": "prod"
+      },
+      "expected": true
+    },
+    {
+      "name": "strict-explicit-false-wins",
+      "kind": "strict",
+      "input": {
+        "explicit": false,
+        "environment_variable": "1",
+        "environment": "dev"
+      },
+      "expected": false
+    },
+    {
+      "name": "log-root-schema",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "version": "1.2.3",
+          "environment": "dev"
+        },
+        "correlation_id": "c-1",
+        "calls": [
+          {
+            "level": "info",
+            "message": "session_created",
+            "fields": {
+              "sid": "s-1",
+              "count": 2,
+              "nested": {
+                "a": [
+                  1,
+                  "b"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "sid": "s-1",
+          "count": 2,
+          "nested": {
+            "a": [
+              1,
+              "b"
+            ]
+          },
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "version": "1.2.3",
+          "environment": "dev",
+          "correlation_id": "c-1",
+          "message": "session_created"
+        }
+      ]
+    },
+    {
+      "name": "log-environment-variables",
+      "kind": "log",
+      "input": {
+        "environment_variables": {
+          "SERVICE_NAME": "from-env",
+          "SERVICE_VERSION": "9",
+          "ENVIRONMENT": "prod"
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "configured from the environment"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "from-env",
+          "version": "9",
+          "environment": "prod",
+          "message": "configured from the environment"
+        }
+      ]
+    },
+    {
+      "name": "log-arguments-over-environment",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "from-argument"
+        },
+        "environment_variables": {
+          "SERVICE_NAME": "from-env",
+          "ENVIRONMENT": "dev"
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "arguments win"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "from-argument",
+          "environment": "dev",
+          "message": "arguments win"
+        }
+      ]
+    },
+    {
+      "name": "log-no-context",
+      "kind": "log",
+      "input": {
+        "calls": [
+          {
+            "level": "info",
+            "message": "nothing configured or bound"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "message": "nothing configured or bound"
+        }
+      ]
+    },
+    {
+      "name": "log-levels",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "calls": [
+          {
+            "level": "debug",
+            "message": "below the default level"
+          },
+          {
+            "level": "info",
+            "message": "i"
+          },
+          {
+            "level": "warning",
+            "message": "w"
+          },
+          {
+            "level": "error",
+            "message": "e"
+          },
+          {
+            "level": "critical",
+            "message": "c"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "i"
+        },
+        {
+          "level": "warning",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "w"
+        },
+        {
+          "level": "error",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "e"
+        },
+        {
+          "level": "critical",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "c"
+        }
+      ]
+    },
+    {
+      "name": "log-debug-level",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "level": "DEBUG",
+        "calls": [
+          {
+            "level": "debug",
+            "message": "shown at DEBUG"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "debug",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "shown at DEBUG"
+        }
+      ]
+    },
+    {
+      "name": "log-warning-level-drops-info",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "level": "WARNING",
+        "calls": [
+          {
+            "level": "info",
+            "message": "dropped"
+          },
+          {
+            "level": "warning",
+            "message": "kept"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "warning",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "kept"
+        }
+      ]
+    },
+    {
+      "name": "log-error-type",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "environment": "prod"
+        },
+        "correlation_id": "c-2",
+        "calls": [
+          {
+            "level": "error",
+            "message": "refresh_failed",
+            "fields": {
+              "sid": "s-2"
+            },
+            "error_type": "OauthException"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "sid": "s-2",
+          "level": "error",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "environment": "prod",
+          "correlation_id": "c-2",
+          "message": "refresh_failed",
+          "error_type": "OauthException"
+        }
+      ]
+    },
+    {
+      "name": "log-warning-with-error-type",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "calls": [
+          {
+            "level": "warning",
+            "message": "token_rejected",
+            "error_type": "WorkOsTokenError"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "warning",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "token_rejected",
+          "error_type": "WorkOsTokenError"
+        }
+      ]
+    },
+    {
+      "name": "metric-line-carries-root-schema",
+      "kind": "metric_line",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "environment": "dev"
+        },
+        "correlation_id": "c-3",
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "_aws": {
+            "Timestamp": "<epoch-ms>",
+            "CloudWatchMetrics": [
+              {
+                "Namespace": "Farsight/Conformance",
+                "Dimensions": [
+                  [
+                    "Service"
+                  ]
+                ],
+                "Metrics": [
+                  {
+                    "Name": "Requests",
+                    "Unit": "Count"
+                  }
+                ]
+              }
+            ]
+          },
+          "Service": "conformance-svc",
+          "Requests": 1,
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "environment": "dev",
+          "correlation_id": "c-3",
+          "message": "metric"
+        }
+      ]
+    },
+    {
+      "name": "count-default-value",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "count-value-and-dimensions",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Retries",
+            "value": 3,
+            "dimensions": {
+              "Route": "login"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Route"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Retries",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Route": "login",
+            "Retries": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "no-service-records-an-empty-set",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": null,
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    []
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "default-dimensions",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "default_dimensions": {
+          "Tier": "edge"
+        },
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Tier"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Tier": "edge",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero-names",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "zero",
+            "names": [
+              "Allowed",
+              "Denied"
+            ],
+            "dimensions": {
+              "Reason": "none"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Reason"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Allowed",
+                      "Unit": "Count"
+                    },
+                    {
+                      "Name": "Denied",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Reason": "none",
+            "Allowed": 0,
+            "Denied": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero-without-names-writes-nothing",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "zero",
+            "names": []
+          }
+        ]
+      },
+      "expected": {
+        "records": []
+      }
+    },
+    {
+      "name": "timing",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "timing",
+            "name": "SignMs",
+            "milliseconds": 12.5
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "SignMs",
+                      "Unit": "Milliseconds"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "SignMs": 12.5
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-units",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Latency": 5,
+              "Calls": 1
+            },
+            "units": {
+              "Latency": "Milliseconds"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Latency",
+                      "Unit": "Milliseconds"
+                    },
+                    {
+                      "Name": "Calls",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Latency": 5,
+            "Calls": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-unit",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Bytes": 512
+            },
+            "unit": "Bytes"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Bytes",
+                      "Unit": "Bytes"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Bytes": 512
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-rollup",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Error": 1
+            },
+            "dimensions": {
+              "Dependency": "dynamodb",
+              "ErrorType": "Throttled"
+            },
+            "rollup_dimension_sets": [
+              [
+                "Service",
+                "Dependency"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Dependency",
+                      "ErrorType"
+                    ],
+                    [
+                      "Service",
+                      "Dependency"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Error",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Dependency": "dynamodb",
+            "ErrorType": "Throttled",
+            "Error": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-dimension-sets",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimensions": {
+              "Route": "login",
+              "Tenant": "t-1"
+            },
+            "dimension_sets": [
+              [
+                "Service",
+                "Route"
+              ],
+              [
+                "Service",
+                "Tenant"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Route"
+                    ],
+                    [
+                      "Service",
+                      "Tenant"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Route": "login",
+            "Tenant": "t-1",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-empty-dimension-set",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimension_sets": [
+              []
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    []
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "emit-no-metrics-writes-nothing",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {}
+          }
+        ]
+      },
+      "expected": {
+        "records": []
+      }
+    },
+    {
+      "name": "dimension-values-coerced",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Attempt": 3,
+              "Cold": true,
+              "Warm": false
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Attempt",
+                      "Cold",
+                      "Warm"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Attempt": "3",
+            "Cold": "True",
+            "Warm": "False",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-values-fractional",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Half": 0.5,
+              "Negative": -1.25,
+              "FixedFloor": 0.0001,
+              "Exponent": 1e-05,
+              "SmallExponent": 2.5e-07
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Half",
+                      "Negative",
+                      "FixedFloor",
+                      "Exponent",
+                      "SmallExponent"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Half": "0.5",
+            "Negative": "-1.25",
+            "FixedFloor": "0.0001",
+            "Exponent": "1e-05",
+            "SmallExponent": "2.5e-07",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-values-integral-float",
+      "kind": "metrics",
+      "requires": [
+        "integral-float"
+      ],
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Whole": 3.0,
+              "Large": 1e+16
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Whole",
+                      "Large"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Whole": "3.0",
+            "Large": "1e+16",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dependency-success",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "dependency_call",
+            "dependency": "ssm"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Dependency"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Latency",
+                      "Unit": "Milliseconds"
+                    },
+                    {
+                      "Name": "Success",
+                      "Unit": "Count"
+                    },
+                    {
+                      "Name": "Error",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Dependency": "ssm",
+            "Latency": "<duration-ms>",
+            "Success": 1,
+            "Error": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "dependency-success-with-resource",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "dependency_call",
+            "dependency": "dynamodb",
+            "resource": "sessions"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Dependency",
+                      "Resource"
+                    ],
+                    [
+                      "Service",
+                      "Dependency"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Latency",
+                      "Unit": "Milliseconds"
+                    },
+                    {
+                      "Name": "Success",
+                      "Unit": "Count"
+                    },
+                    {
+                      "Name": "Error",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Dependency": "dynamodb",
+            "Resource": "sessions",
+            "Latency": "<duration-ms>",
+            "Success": 1,
+            "Error": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "dependency-error",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "dependency_call",
+            "dependency": "workos",
+            "error_type": "GenericServerException"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Dependency",
+                      "ErrorType"
+                    ],
+                    [
+                      "Service",
+                      "Dependency"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Latency",
+                      "Unit": "Milliseconds"
+                    },
+                    {
+                      "Name": "Success",
+                      "Unit": "Count"
+                    },
+                    {
+                      "Name": "Error",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Dependency": "workos",
+            "ErrorType": "GenericServerException",
+            "Latency": "<duration-ms>",
+            "Success": 0,
+            "Error": 1
+          }
+        ],
+        "raises": "GenericServerException"
+      }
+    },
+    {
+      "name": "dependency-error-with-resource",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "dependency_call",
+            "dependency": "dynamodb",
+            "resource": "sessions",
+            "error_type": "ProvisionedThroughputExceededException"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Dependency",
+                      "Resource",
+                      "ErrorType"
+                    ],
+                    [
+                      "Service",
+                      "Dependency"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Latency",
+                      "Unit": "Milliseconds"
+                    },
+                    {
+                      "Name": "Success",
+                      "Unit": "Count"
+                    },
+                    {
+                      "Name": "Error",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Dependency": "dynamodb",
+            "Resource": "sessions",
+            "ErrorType": "ProvisionedThroughputExceededException",
+            "Latency": "<duration-ms>",
+            "Success": 0,
+            "Error": 1
+          }
+        ],
+        "raises": "ProvisionedThroughputExceededException"
+      }
+    },
+    {
+      "name": "forbidden-dimension-name",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Logins",
+            "dimensions": {
+              "userId": "u-1"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "userId",
+            "metric_names": [
+              "Logins"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "forbidden-dimension-name-normalized",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Logins",
+            "dimensions": {
+              "User-Email": "x"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "User-Email",
+            "metric_names": [
+              "Logins"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "forbidden-dimension-name-substring",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Uploads",
+            "dimensions": {
+              "SourceDocumentKind": "pdf"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "SourceDocumentKind",
+            "metric_names": [
+              "Uploads"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-too-long",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "Route",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-at-limit",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "Route"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Route": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-multi-line",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": "a\nb"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "Route",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-empty",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": ""
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "Route",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-object",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": {
+                "a": 1
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "TypeError",
+            "dimension": "Route",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-value-null",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": null
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "TypeError",
+            "dimension": "Route",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "too-many-dimensions",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "D0": "v",
+              "D1": "v",
+              "D2": "v",
+              "D3": "v",
+              "D4": "v",
+              "D5": "v",
+              "D6": "v",
+              "D7": "v"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "DimensionLimitError",
+            "dimension": "*",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimensions-at-limit",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "D0": "v",
+              "D1": "v",
+              "D2": "v",
+              "D3": "v",
+              "D4": "v",
+              "D5": "v",
+              "D6": "v"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service",
+                      "D0",
+                      "D1",
+                      "D2",
+                      "D3",
+                      "D4",
+                      "D5",
+                      "D6"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "D0": "v",
+            "D1": "v",
+            "D2": "v",
+            "D3": "v",
+            "D4": "v",
+            "D5": "v",
+            "D6": "v",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "reserved-metric-name",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "message": 1
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "message",
+            "metric_names": [
+              "message"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "reserved-dimension-name",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "trace_id": "t"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "trace_id",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "metric-and-dimension-collide",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Route": 1
+            },
+            "dimensions": {
+              "Route": "login"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "Route",
+            "metric_names": [
+              "Route"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "rollup-names-a-missing-dimension",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Error": 1
+            },
+            "rollup_dimension_sets": [
+              [
+                "Missing"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "Missing",
+            "metric_names": [
+              "Error"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-sets-and-rollup",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimensions": {
+              "Route": "login"
+            },
+            "rollup_dimension_sets": [
+              [
+                "Service"
+              ]
+            ],
+            "dimension_sets": [
+              [
+                "Service"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "dimension_sets",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-sets-empty",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimension_sets": []
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "dimension_sets",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-sets-duplicate",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimensions": {
+              "Route": "login"
+            },
+            "dimension_sets": [
+              [
+                "Service",
+                "Route"
+              ],
+              [
+                "Route",
+                "Service"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "Route,Service",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-sets-missing-dimension",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimension_sets": [
+              [
+                "Nope"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "MetricRecordError",
+            "dimension": "Nope",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "dimension-set-too-wide",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "Requests": 1
+            },
+            "dimension_sets": [
+              [
+                "K0",
+                "K1",
+                "K2",
+                "K3",
+                "K4",
+                "K5",
+                "K6",
+                "K7",
+                "K8",
+                "K9",
+                "K10",
+                "K11",
+                "K12",
+                "K13",
+                "K14",
+                "K15",
+                "K16",
+                "K17",
+                "K18",
+                "K19",
+                "K20",
+                "K21",
+                "K22",
+                "K23",
+                "K24",
+                "K25",
+                "K26",
+                "K27",
+                "K28",
+                "K29",
+                "K30"
+              ]
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "DimensionLimitError",
+            "dimension": "dimension_sets",
+            "metric_names": [
+              "Requests"
+            ]
+          },
+          {
+            "violation": "MetricRecordError",
+            "dimension": "K0,K1,K2,K3,K4,K5,K6,K7,K8,K9,K10,K11,K12,K13,K14,K15,K16,K17,K18,K19,K20,K21,K22,K23,K24,K25,K26,K27,K28,K29,K30",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "one-warning-per-violation-and-name",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "email": "a\nb"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "email",
+            "metric_names": [
+              "Requests"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "warned-once-per-instance",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "Logins",
+            "dimensions": {
+              "userId": "u-1"
+            }
+          },
+          {
+            "op": "count",
+            "name": "Logins",
+            "dimensions": {
+              "userId": "u-2"
+            }
+          },
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Requests": 1
+          }
+        ],
+        "warnings": [
+          {
+            "violation": "ForbiddenDimensionError",
+            "dimension": "userId",
+            "metric_names": [
+              "Logins"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "strict-forbidden-raises",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "strict": true,
+        "calls": [
+          {
+            "op": "count",
+            "name": "Logins",
+            "dimensions": {
+              "email": "x"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "raises": "ForbiddenDimensionError"
+      }
+    },
+    {
+      "name": "strict-type-error-raises",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "strict": true,
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests",
+            "dimensions": {
+              "Route": null
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "raises": "TypeError"
+      }
+    },
+    {
+      "name": "strict-first-problem-raises",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "strict": true,
+        "calls": [
+          {
+            "op": "emit",
+            "metrics": {
+              "message": 1
+            },
+            "dimensions": {
+              "userId": "u"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "raises": "ForbiddenDimensionError"
+      }
+    },
+    {
+      "name": "strict-valid-record-writes",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "strict": true,
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [
+          {
+            "_aws": {
+              "Timestamp": "<epoch-ms>",
+              "CloudWatchMetrics": [
+                {
+                  "Namespace": "Farsight/Conformance",
+                  "Dimensions": [
+                    [
+                      "Service"
+                    ]
+                  ],
+                  "Metrics": [
+                    {
+                      "Name": "Requests",
+                      "Unit": "Count"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Service": "conformance-svc",
+            "Requests": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "default-dimension-forbidden-raises",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "default_dimensions": {
+          "userId": "u"
+        },
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "raises": "ForbiddenDimensionError"
+      }
+    },
+    {
+      "name": "default-dimension-too-many-raises",
+      "kind": "metrics",
+      "input": {
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "default_dimensions": {
+          "D0": "v",
+          "D1": "v",
+          "D2": "v",
+          "D3": "v",
+          "D4": "v",
+          "D5": "v",
+          "D6": "v",
+          "D7": "v"
+        },
+        "calls": [
+          {
+            "op": "count",
+            "name": "Requests"
+          }
+        ]
+      },
+      "expected": {
+        "records": [],
+        "raises": "DimensionLimitError"
+      }
+    }
+  ]
+}
