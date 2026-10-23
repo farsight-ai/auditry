@@ -162,18 +162,28 @@ class FastAPIMiddleware:
             self.request_adapter.clear_cache(request)
 
 
+class _DropRecords(logging.Filter):
+    """Rejects every record logged directly on the logger it is attached to."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
 def _suppress_server_access_log() -> None:
     """Turns off uvicorn's access line, which repeats the middleware's request line in plain
     text with the raw query string, outside redaction.
 
-    uvicorn writes access lines only while its access logger can reach a handler, checked
-    as each connection opens; the same state its ``--no-access-log`` flag leaves. A server
-    configured later, as ``uvicorn.run(app)`` is, re-installs that handler unless it is given
-    ``log_config=None`` or ``access_log=False``.
+    Two layers. With no handler and no propagation, uvicorn does not build access lines at all:
+    it checks for a handler as each connection opens, the state ``--no-access-log`` leaves. A
+    server configured later, as ``uvicorn.run(app)`` is, re-installs that handler; the filter
+    still drops the lines, because ``logging.config.dictConfig`` replaces a logger's handlers
+    but keeps its filters (tests/test_server_logging.py fails if that ever changes).
     """
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.handlers.clear()
     access_logger.propagate = False
+    if not any(isinstance(existing, _DropRecords) for existing in access_logger.filters):
+        access_logger.addFilter(_DropRecords())
 
 
 def create_middleware(app, config: ObservabilityConfig):

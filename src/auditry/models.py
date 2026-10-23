@@ -177,9 +177,8 @@ class ObservabilityConfig(BaseModel):
         description=(
             "Turn off uvicorn's access log when the middleware is created. The "
             "middleware already logs every request, redacted; uvicorn's line repeats "
-            "it in plain text with the raw query string. FastAPI only. A server "
-            "started with uvicorn.run(app) re-enables it unless it is also given "
-            "log_config=None or access_log=False."
+            "it in plain text with the raw query string. FastAPI only. Holds for "
+            "a server started with uvicorn.run(app) too."
         ),
     )
     tracing: TracingConfig = Field(

@@ -44,17 +44,22 @@ _UVICORN_STYLE_CONFIG = {
 }
 
 
+def _restore_server_loggers() -> None:
+    for name in _SERVER_LOGGER_NAMES:
+        server_logger = logging.getLogger(name)
+        server_logger.handlers.clear()
+        server_logger.filters.clear()
+        server_logger.propagate = True
+        server_logger.setLevel(logging.NOTSET)
+
+
 @pytest.fixture
 def uvicorn_configured():
     """uvicorn's loggers as its CLI leaves them, put back to defaults afterwards."""
     reset_process_state()
     logging.config.dictConfig(_UVICORN_STYLE_CONFIG)
     yield
-    for name in _SERVER_LOGGER_NAMES:
-        server_logger = logging.getLogger(name)
-        server_logger.handlers.clear()
-        server_logger.propagate = True
-        server_logger.setLevel(logging.NOTSET)
+    _restore_server_loggers()
     reset_process_state()
 
 
@@ -120,31 +125,45 @@ def server_loggers_restored():
     """Starts from no logging configured and puts uvicorn's loggers back afterwards."""
     reset_process_state()
     yield
-    for name in _SERVER_LOGGER_NAMES:
-        server_logger = logging.getLogger(name)
-        server_logger.handlers.clear()
-        server_logger.propagate = True
-        server_logger.setLevel(logging.NOTSET)
+    _restore_server_loggers()
     reset_process_state()
 
 
-def _uvicorn_access_log_on(**server_config) -> bool:
-    """Whether uvicorn writes access lines once it is configured after the app."""
+def _access_lines_once_uvicorn_is_configured(capsys, app_config=None, **server_config) -> list[str]:
+    """The output of an access line logged as uvicorn logs it, once uvicorn is configured."""
     configure_logging(service="svc")
-    app = _app()
+    app = _app(**(app_config or {}))
     uvicorn.Config(app, **server_config)
-    # uvicorn writes access lines only while this can reach a handler
-    return logging.getLogger("uvicorn.access").hasHandlers()
+    capsys.readouterr()
+    logging.getLogger("uvicorn.access").info(
+        '%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET", "/hook?token=SECRET", "1.1", 200
+    )
+    captured = capsys.readouterr()
+    return [line for line in (captured.out + captured.err).splitlines() if "SECRET" in line]
 
 
-def test_uvicorns_default_log_config_brings_the_access_log_back(server_loggers_restored):
-    # The case the README warns about: uvicorn's own config re-installs the handler.
-    assert _uvicorn_access_log_on() is True
+def test_uvicorns_default_log_config_cannot_bring_the_access_log_back(
+    server_loggers_restored, capsys
+):
+    lines = _access_lines_once_uvicorn_is_configured(capsys)
+
+    # uvicorn's config re-installed its handler; the filter still drops the line
+    assert logging.getLogger("uvicorn.access").hasHandlers() is True
+    assert lines == []
 
 
-def test_log_config_none_keeps_the_access_log_off(server_loggers_restored):
-    assert _uvicorn_access_log_on(log_config=None) is False
+def test_log_config_none_keeps_the_access_log_off(server_loggers_restored, capsys):
+    assert _access_lines_once_uvicorn_is_configured(capsys, log_config=None) == []
+    assert logging.getLogger("uvicorn.access").hasHandlers() is False
 
 
-def test_access_log_false_keeps_the_access_log_off(server_loggers_restored):
-    assert _uvicorn_access_log_on(access_log=False) is False
+def test_access_log_false_keeps_the_access_log_off(server_loggers_restored, capsys):
+    assert _access_lines_once_uvicorn_is_configured(capsys, access_log=False) == []
+
+
+def test_a_service_that_keeps_the_access_log_gets_uvicorns_line(server_loggers_restored, capsys):
+    lines = _access_lines_once_uvicorn_is_configured(
+        capsys, app_config={"suppress_server_access_log": False}
+    )
+
+    assert len(lines) == 1

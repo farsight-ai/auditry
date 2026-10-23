@@ -16,13 +16,12 @@ dashboard or alarm that reads uvicorn's access lines before upgrading.
   handlers uvicorn puts on `uvicorn` and `uvicorn.error`, so its startup,
   shutdown and server-error lines render through the root formatter like any
   other foreign record.
-- **`uvicorn.run(app)` needs `log_config=None` or `access_log=False`.** A
-  server started in code configures logging after the app is built; with
-  uvicorn's default `log_config` that re-installs its handlers, the access
-  log's included, and request lines with the raw query string come back.
-  `log_config=None` keeps everything auditry set up; `access_log=False` keeps
-  the access log off. The uvicorn CLI is unaffected: it configures logging
-  before it imports the app.
+- **The suppression survives `uvicorn.run(app)`.** A server started in code
+  configures logging after the app is built and, with uvicorn's default
+  `log_config`, re-installs the access log's handler. A filter that drops every
+  record stays on uvicorn's access logger through that, so its lines stay off.
+  uvicorn's other lines go back to plain text there; `log_config=None` keeps
+  them JSON.
 
 ### Added
 
