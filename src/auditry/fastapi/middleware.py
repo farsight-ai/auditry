@@ -1,5 +1,6 @@
 """FastAPI middleware for observability."""
 
+import logging
 import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
@@ -161,6 +162,18 @@ class FastAPIMiddleware:
             self.request_adapter.clear_cache(request)
 
 
+def _suppress_server_access_log() -> None:
+    """Turns off uvicorn's access line, which repeats the middleware's request line in plain
+    text with the raw query string, outside redaction.
+
+    uvicorn writes access lines only while its access logger can reach a handler, checked
+    as each connection opens; the same state its ``--no-access-log`` flag leaves.
+    """
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+
+
 def create_middleware(app, config: ObservabilityConfig):
     """Create and attach observability middleware to FastAPI app.
 
@@ -170,6 +183,8 @@ def create_middleware(app, config: ObservabilityConfig):
     _set_config_service(config.service_name)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
+    if config.suppress_server_access_log:
+        _suppress_server_access_log()
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)

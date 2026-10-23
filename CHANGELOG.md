@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 (2026-10-23)
+
+### Changed
+
+- **uvicorn's access log is off by default.** `create_middleware()` (FastAPI)
+  leaves uvicorn's access logger with no handler, as `--no-access-log` does.
+  The middleware already logs every request, with query parameters redacted;
+  uvicorn's access line repeated it in plain text with the raw query string.
+  `ObservabilityConfig(suppress_server_access_log=False)` keeps it.
+- **uvicorn's own lines are JSON.** `configure_logging()` drops the plain-text
+  handlers uvicorn puts on `uvicorn` and `uvicorn.error`, so its startup,
+  shutdown and server-error lines render through the root formatter like any
+  other foreign record. A server started in code after `configure_logging()`
+  needs `log_config=None`.
+
+### Added
+
+- `ObservabilityConfig.suppress_server_access_log` (default `True`).
+
 ## 0.6.1 (2026-10-23)
 
 ### Added
