@@ -198,7 +198,8 @@ config = ObservabilityConfig(
 
     # Turn off uvicorn's access log (default: True). The middleware already logs
     # every request; uvicorn's access line repeats it in plain text, with the raw
-    # query string. FastAPI only. See Running Under uvicorn.
+    # query string. FastAPI only. With uvicorn.run(app), also pass
+    # log_config=None or access_log=False; see Running Under uvicorn.
     suppress_server_access_log=True,
 
     # OpenTelemetry tracing (requires auditry[otel]; from auditry import
@@ -1003,8 +1004,21 @@ over, so a service's whole stdout stays single-line JSON:
   keep it.
 
 The uvicorn CLI configures its loggers before it imports the app, so calling
-both at import is enough. A server started in code (`uvicorn.run(app)`) after
-`configure_logging()` re-installs its handlers; pass `log_config=None`.
+both at import is enough.
+
+A server started in code (`uvicorn.run(app)`, or `uvicorn.Config(app)`)
+configures logging after the app is built. With uvicorn's default `log_config`
+that re-installs its handlers, **the access log's included: request lines with
+the raw query string come back**, whatever `suppress_server_access_log` says.
+Start it so the suppression holds:
+
+```python
+# Keeps everything auditry set up: JSON server lines, access log off
+uvicorn.run(app, log_config=None)
+
+# Keeps the access log off; uvicorn's other lines go back to plain text
+uvicorn.run(app, access_log=False)
+```
 
 ## Sensitive Data Handling
 

@@ -50,6 +50,9 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-timeout>=2.0.0",
     "httpx>=0.24.0",
+    # tests/test_server_logging.py starts uvicorn's real logging config, the
+    # thing auditry's server-logger handling has to survive.
+    "uvicorn>=0.30.0",
     "mypy>=1.0.0",
     # Pinned rather than floated: CI, pre-commit and every developer have to
     # agree on what counts as a violation. Bump here and the workflows follow,

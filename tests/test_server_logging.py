@@ -9,6 +9,7 @@ import logging
 import logging.config
 
 import pytest
+import uvicorn
 from fastapi import FastAPI
 
 from auditry import ObservabilityConfig, configure_logging
@@ -108,3 +109,42 @@ def test_a_service_can_keep_uvicorns_access_log(uvicorn_configured):
     _app(suppress_server_access_log=False)
 
     assert logging.getLogger("uvicorn.access").hasHandlers() is True
+
+
+# A server started in code, `uvicorn.run(app)`, configures logging when it builds its Config:
+# after the app, and so after create_middleware(). These run that order with uvicorn itself.
+
+
+@pytest.fixture
+def server_loggers_restored():
+    """Starts from no logging configured and puts uvicorn's loggers back afterwards."""
+    reset_process_state()
+    yield
+    for name in _SERVER_LOGGER_NAMES:
+        server_logger = logging.getLogger(name)
+        server_logger.handlers.clear()
+        server_logger.propagate = True
+        server_logger.setLevel(logging.NOTSET)
+    reset_process_state()
+
+
+def _uvicorn_access_log_on(**server_config) -> bool:
+    """Whether uvicorn writes access lines once it is configured after the app."""
+    configure_logging(service="svc")
+    app = _app()
+    uvicorn.Config(app, **server_config)
+    # uvicorn writes access lines only while this can reach a handler
+    return logging.getLogger("uvicorn.access").hasHandlers()
+
+
+def test_uvicorns_default_log_config_brings_the_access_log_back(server_loggers_restored):
+    # The case the README warns about: uvicorn's own config re-installs the handler.
+    assert _uvicorn_access_log_on() is True
+
+
+def test_log_config_none_keeps_the_access_log_off(server_loggers_restored):
+    assert _uvicorn_access_log_on(log_config=None) is False
+
+
+def test_access_log_false_keeps_the_access_log_off(server_loggers_restored):
+    assert _uvicorn_access_log_on(access_log=False) is False

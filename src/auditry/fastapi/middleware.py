@@ -167,7 +167,9 @@ def _suppress_server_access_log() -> None:
     text with the raw query string, outside redaction.
 
     uvicorn writes access lines only while its access logger can reach a handler, checked
-    as each connection opens; the same state its ``--no-access-log`` flag leaves.
+    as each connection opens; the same state its ``--no-access-log`` flag leaves. A server
+    configured later, as ``uvicorn.run(app)`` is, re-installs that handler unless it is given
+    ``log_config=None`` or ``access_log=False``.
     """
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.handlers.clear()
