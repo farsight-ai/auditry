@@ -45,6 +45,7 @@ metrics.count("SchemaValidationFailed", 0)   # zero count keeps alarms alive
 ```
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -492,6 +493,7 @@ class MetricsLogger:
         self,
         dependency: str,
         resource: str | None = None,
+        ignore: tuple[type[BaseException], ...] = (),
     ) -> Iterator[None]:
         """
         Time a dependency call and count success/error, with the error
@@ -505,6 +507,16 @@ class MetricsLogger:
         Emits ``Latency`` (ms), ``Success`` and ``Error`` counts under the
         ``Dependency`` (+ optional ``Resource``) dimension — success emits
         ``Error: 0`` and vice versa, so no-data alarms work.
+
+        ``ignore`` names exception types that are the caller's own pre-flight
+        failures (request validation that runs before any network call):
+        they propagate untouched and record neither outcome, so a bad request
+        never counts against the dependency's availability.
+
+        ``asyncio.CancelledError`` IS recorded (ErrorType ``CancelledError``)
+        even though it is a BaseException: an ``asyncio.wait_for`` timeout
+        cancels the awaiting coroutine rather than raising inside it, and a
+        timed-out dependency call must reach the dependency's alarms.
         """
         dims: dict[str, str] = {"Dependency": dependency}
         if resource:
@@ -518,7 +530,9 @@ class MetricsLogger:
         start = time.perf_counter()
         try:
             yield
-        except Exception as exc:
+        except ignore:
+            raise
+        except (Exception, asyncio.CancelledError) as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
             full_dims = {**dims, "ErrorType": type(exc).__name__}
             self.emit(

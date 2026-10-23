@@ -562,3 +562,46 @@ class TestExplicitDimensionSets:
             ["Service", "Route", "Tenant"],
             ["Service", "Route"],
         ]
+
+
+def test_dependency_call_ignore_propagates_without_emitting():
+    """Exception types in ``ignore`` are the caller's own pre-flight failures
+    (request validation before any network call): they propagate untouched and
+    record neither Success nor Error, so a bad request never counts against
+    the dependency's availability."""
+
+    class RequestValidationError(ValueError):
+        pass
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    with pytest.raises(RequestValidationError):
+        with m.dependency_call("llm", ignore=(ValueError,)):
+            raise RequestValidationError("schema rejected locally")
+    assert sink.getvalue() == ""
+
+
+def test_dependency_call_records_cancellation_as_error():
+    """An ``asyncio.wait_for`` timeout cancels the awaiting coroutine with
+    ``CancelledError`` — a BaseException — which must still be recorded as an
+    Error (ErrorType=CancelledError) and re-raised, or every relay-side
+    timeout is invisible to the dependency's alarms."""
+    import asyncio
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+
+    async def slow_call():
+        with m.dependency_call("llm"):
+            await asyncio.sleep(5)
+
+    async def main():
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(slow_call(), timeout=0.01)
+
+    asyncio.run(main())
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    assert record["Error"] == 1
+    assert record["Success"] == 0
+    assert record["ErrorType"] == "CancelledError"
+    assert record["Latency"] >= 0
