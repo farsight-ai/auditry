@@ -562,3 +562,80 @@ class TestExplicitDimensionSets:
             ["Service", "Route", "Tenant"],
             ["Service", "Route"],
         ]
+
+
+def test_dependency_call_ignore_propagates_without_emitting():
+    """Exception types in ``ignore`` are the caller's own pre-flight failures
+    (request validation before any network call): they propagate untouched and
+    record neither Success nor Error, so a bad request never counts against
+    the dependency's availability."""
+
+    class RequestValidationError(ValueError):
+        pass
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+    with pytest.raises(RequestValidationError):
+        with m.dependency_call("llm", ignore=(ValueError,)):
+            raise RequestValidationError("schema rejected locally")
+    assert sink.getvalue() == ""
+
+
+def test_dependency_call_does_not_record_external_cancellation():
+    """A ``CancelledError`` arriving from outside the span — a client
+    disconnect, a lost race, a TaskGroup sibling failing, shutdown — says
+    nothing about the dependency and cannot be told apart from a timeout, so it
+    is re-raised unrecorded: neither Success nor Error, and nothing on the
+    coarse alarm series."""
+    import asyncio
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+
+    async def call():
+        with m.dependency_call("llm"):
+            await asyncio.sleep(5)
+
+    async def main():
+        task = asyncio.create_task(call())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert sink.getvalue() == ""
+
+
+@pytest.mark.parametrize("form", ["asyncio.timeout", "wait_for"])
+def test_dependency_call_timeout_inside_span_records_timeout_error(form):
+    """The documented placement: a timeout INSIDE the span converts the
+    cancellation at its own boundary, so the span sees ``TimeoutError`` and
+    records it like any other dependency failure."""
+    import asyncio
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+
+    async def call():
+        with m.dependency_call("llm"):
+            if form == "asyncio.timeout":
+                async with asyncio.timeout(0.01):
+                    await asyncio.sleep(5)
+            else:
+                await asyncio.wait_for(asyncio.sleep(5), timeout=0.01)
+
+    async def main():
+        with pytest.raises(TimeoutError):
+            await call()
+
+    asyncio.run(main())
+    record = json.loads(sink.getvalue().strip().splitlines()[-1])
+    assert record["Error"] == 1
+    assert record["Success"] == 0
+    assert record["ErrorType"] == "TimeoutError"
+    assert record["Dependency"] == "llm"
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == sorted(
+        map(sorted, [["Service", "Dependency", "ErrorType"], ["Service", "Dependency"]])
+    )

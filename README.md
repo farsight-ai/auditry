@@ -668,6 +668,33 @@ That emits `Latency` (ms), `Success`, and `Error` under a `Dependency`
 emits `Success: 0`, so neither series ever goes silent. The exception
 propagates unchanged — this measures, it doesn't swallow.
 
+Two refinements for calls that wrap more than the network round trip:
+
+```python
+with metrics.dependency_call("gemini", ignore=(RequestValidationError,)):
+    schema = compile_schema(request.schema)   # local; may raise RequestValidationError
+    response = await client.generate(...)      # the dependency
+```
+
+- `ignore=` names exception types that are the caller's own pre-flight
+  failures (request validation before any network call). They propagate
+  untouched and record neither `Success` nor `Error`, so a bad request never
+  counts against the dependency's availability.
+- A bare `asyncio.CancelledError` is re-raised unrecorded. It arrives on
+  client disconnects, lost races, TaskGroup sibling failures and shutdown as
+  well as on timeouts placed outside the span, says nothing about the
+  dependency, and cannot be told apart from a timeout.
+
+Put timeouts **inside** the span: `asyncio.timeout()` and `asyncio.wait_for`
+convert the cancellation at their own boundary, so the span records
+`ErrorType: TimeoutError` like any other failure.
+
+```python
+with metrics.dependency_call("gemini"):
+    async with asyncio.timeout(request.timeout):
+        response = await client.generate(...)
+```
+
 ### Why `zero()` Exists
 
 Monitoring systems forget metrics that stop reporting. If you only emit

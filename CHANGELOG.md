@@ -1,13 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-10-23)
 
 ### Added
 
+- `MetricsLogger.dependency_call(..., ignore=(ExcType, ...))`: exception types
+  that are the caller's own pre-flight failures (request validation before any
+  network call) propagate untouched and record neither `Success` nor `Error`,
+  so a bad request never counts against the dependency's availability.
 - `conformance/`: auditry's log lines, metric records, redaction and strict
   mode recorded as data (`contract.json`, `vectors.json`), for ports to other
   languages to test against. `tests/test_conformance.py` fails when the code
   and the vectors disagree. Not in the wheel; in the sdist, for the tests.
+
+### Documentation
+
+- `dependency_call`: put timeouts inside the span (`asyncio.timeout()` or
+  `wait_for` within the `with`) so they record as `ErrorType: TimeoutError`.
+  A bare `asyncio.CancelledError` — client disconnect, lost race, TaskGroup
+  sibling, shutdown, or a timeout placed outside the span — is re-raised
+  unrecorded, as before: its cause is unknown to the span and it says nothing
+  about the dependency.
 
 ## 0.6.0 (2026-10-19)
 

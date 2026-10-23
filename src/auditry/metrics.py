@@ -492,6 +492,7 @@ class MetricsLogger:
         self,
         dependency: str,
         resource: str | None = None,
+        ignore: tuple[type[BaseException], ...] = (),
     ) -> Iterator[None]:
         """
         Time a dependency call and count success/error, with the error
@@ -505,6 +506,20 @@ class MetricsLogger:
         Emits ``Latency`` (ms), ``Success`` and ``Error`` counts under the
         ``Dependency`` (+ optional ``Resource``) dimension — success emits
         ``Error: 0`` and vice versa, so no-data alarms work.
+
+        ``ignore`` names exception types that are the caller's own pre-flight
+        failures (request validation that runs before any network call):
+        they propagate untouched and record neither outcome, so a bad request
+        never counts against the dependency's availability.
+
+        Put timeouts INSIDE the span (``async with asyncio.timeout(t):`` or
+        ``await asyncio.wait_for(..., t)`` within the ``with``): they convert
+        the cancellation at their own boundary, so the span records
+        ``ErrorType: TimeoutError``. A bare ``asyncio.CancelledError`` arriving
+        from outside — a client disconnect, a lost race, a TaskGroup sibling,
+        shutdown, or a timeout placed outside the span — is re-raised
+        unrecorded: it says nothing about the dependency and cannot be told
+        apart from a timeout.
         """
         dims: dict[str, str] = {"Dependency": dependency}
         if resource:
@@ -518,6 +533,8 @@ class MetricsLogger:
         start = time.perf_counter()
         try:
             yield
+        except ignore:
+            raise
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
             full_dims = {**dims, "ErrorType": type(exc).__name__}
