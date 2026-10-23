@@ -581,27 +581,61 @@ def test_dependency_call_ignore_propagates_without_emitting():
     assert sink.getvalue() == ""
 
 
-def test_dependency_call_records_cancellation_as_error():
-    """An ``asyncio.wait_for`` timeout cancels the awaiting coroutine with
-    ``CancelledError`` — a BaseException — which must still be recorded as an
-    Error (ErrorType=CancelledError) and re-raised, or every relay-side
-    timeout is invisible to the dependency's alarms."""
+def test_dependency_call_does_not_record_external_cancellation():
+    """A ``CancelledError`` arriving from outside the span — a client
+    disconnect, a lost race, a TaskGroup sibling failing, shutdown — says
+    nothing about the dependency and cannot be told apart from a timeout, so it
+    is re-raised unrecorded: neither Success nor Error, and nothing on the
+    coarse alarm series."""
     import asyncio
 
     sink = io.StringIO()
     m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
 
-    async def slow_call():
+    async def call():
         with m.dependency_call("llm"):
             await asyncio.sleep(5)
 
     async def main():
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(slow_call(), timeout=0.01)
+        task = asyncio.create_task(call())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert sink.getvalue() == ""
+
+
+@pytest.mark.parametrize("form", ["asyncio.timeout", "wait_for"])
+def test_dependency_call_timeout_inside_span_records_timeout_error(form):
+    """The documented placement: a timeout INSIDE the span converts the
+    cancellation at its own boundary, so the span sees ``TimeoutError`` and
+    records it like any other dependency failure."""
+    import asyncio
+
+    sink = io.StringIO()
+    m = MetricsLogger(namespace="Test/NS", service="svc", sink=sink)
+
+    async def call():
+        with m.dependency_call("llm"):
+            if form == "asyncio.timeout":
+                async with asyncio.timeout(0.01):
+                    await asyncio.sleep(5)
+            else:
+                await asyncio.wait_for(asyncio.sleep(5), timeout=0.01)
+
+    async def main():
+        with pytest.raises(TimeoutError):
+            await call()
 
     asyncio.run(main())
     record = json.loads(sink.getvalue().strip().splitlines()[-1])
     assert record["Error"] == 1
     assert record["Success"] == 0
-    assert record["ErrorType"] == "CancelledError"
-    assert record["Latency"] >= 0
+    assert record["ErrorType"] == "TimeoutError"
+    assert record["Dependency"] == "llm"
+    dim_sets = record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]
+    assert sorted(map(sorted, dim_sets)) == sorted(
+        map(sorted, [["Service", "Dependency", "ErrorType"], ["Service", "Dependency"]])
+    )

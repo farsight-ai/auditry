@@ -45,7 +45,6 @@ metrics.count("SchemaValidationFailed", 0)   # zero count keeps alarms alive
 ```
 """
 
-import asyncio
 import json
 import logging
 import sys
@@ -513,10 +512,14 @@ class MetricsLogger:
         they propagate untouched and record neither outcome, so a bad request
         never counts against the dependency's availability.
 
-        ``asyncio.CancelledError`` IS recorded (ErrorType ``CancelledError``)
-        even though it is a BaseException: an ``asyncio.wait_for`` timeout
-        cancels the awaiting coroutine rather than raising inside it, and a
-        timed-out dependency call must reach the dependency's alarms.
+        Put timeouts INSIDE the span (``async with asyncio.timeout(t):`` or
+        ``await asyncio.wait_for(..., t)`` within the ``with``): they convert
+        the cancellation at their own boundary, so the span records
+        ``ErrorType: TimeoutError``. A bare ``asyncio.CancelledError`` arriving
+        from outside — a client disconnect, a lost race, a TaskGroup sibling,
+        shutdown, or a timeout placed outside the span — is re-raised
+        unrecorded: it says nothing about the dependency and cannot be told
+        apart from a timeout.
         """
         dims: dict[str, str] = {"Dependency": dependency}
         if resource:
@@ -532,7 +535,7 @@ class MetricsLogger:
             yield
         except ignore:
             raise
-        except (Exception, asyncio.CancelledError) as exc:
+        except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
             full_dims = {**dims, "ErrorType": type(exc).__name__}
             self.emit(

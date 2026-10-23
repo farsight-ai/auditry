@@ -13,13 +13,14 @@
   languages to test against. `tests/test_conformance.py` fails when the code
   and the vectors disagree. Not in the wheel; in the sdist, for the tests.
 
-### Fixed
+### Documentation
 
-- `dependency_call` records `asyncio.CancelledError` (as `ErrorType:
-  CancelledError`) instead of letting it pass unrecorded. An
-  `asyncio.wait_for` timeout cancels the awaiting coroutine rather than
-  raising inside it, so a timed-out dependency call emitted nothing and never
-  reached the dependency's alarms.
+- `dependency_call`: put timeouts inside the span (`asyncio.timeout()` or
+  `wait_for` within the `with`) so they record as `ErrorType: TimeoutError`.
+  A bare `asyncio.CancelledError` — client disconnect, lost race, TaskGroup
+  sibling, shutdown, or a timeout placed outside the span — is re-raised
+  unrecorded, as before: its cause is unknown to the span and it says nothing
+  about the dependency.
 
 ## 0.6.0 (2026-10-19)
 

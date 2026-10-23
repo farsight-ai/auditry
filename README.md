@@ -680,10 +680,20 @@ with metrics.dependency_call("gemini", ignore=(RequestValidationError,)):
   failures (request validation before any network call). They propagate
   untouched and record neither `Success` nor `Error`, so a bad request never
   counts against the dependency's availability.
-- `asyncio.CancelledError` **is** recorded, as `ErrorType: CancelledError`,
-  even though it is a `BaseException`. An `asyncio.wait_for` timeout cancels
-  the awaiting coroutine rather than raising inside it, so without this a
-  timed-out dependency call would be invisible to the dependency's alarms.
+- A bare `asyncio.CancelledError` is re-raised unrecorded. It arrives on
+  client disconnects, lost races, TaskGroup sibling failures and shutdown as
+  well as on timeouts placed outside the span, says nothing about the
+  dependency, and cannot be told apart from a timeout.
+
+Put timeouts **inside** the span: `asyncio.timeout()` and `asyncio.wait_for`
+convert the cancellation at their own boundary, so the span records
+`ErrorType: TimeoutError` like any other failure.
+
+```python
+with metrics.dependency_call("gemini"):
+    async with asyncio.timeout(request.timeout):
+        response = await client.generate(...)
+```
 
 ### Why `zero()` Exists
 
