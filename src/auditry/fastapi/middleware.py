@@ -1,5 +1,6 @@
 """FastAPI middleware for observability."""
 
+import logging
 import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
@@ -161,6 +162,30 @@ class FastAPIMiddleware:
             self.request_adapter.clear_cache(request)
 
 
+class _DropRecords(logging.Filter):
+    """Rejects every record logged directly on the logger it is attached to."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
+def _suppress_server_access_log() -> None:
+    """Turns off uvicorn's access line, which repeats the middleware's request line in plain
+    text with the raw query string, outside redaction.
+
+    Two layers. With no handler and no propagation, uvicorn does not build access lines at all:
+    it checks for a handler as each connection opens, the state ``--no-access-log`` leaves. A
+    server configured later, as ``uvicorn.run(app)`` is, re-installs that handler; the filter
+    still drops the lines, because ``logging.config.dictConfig`` replaces a logger's handlers
+    but keeps its filters (tests/test_server_logging.py fails if that ever changes).
+    """
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+    if not any(isinstance(existing, _DropRecords) for existing in access_logger.filters):
+        access_logger.addFilter(_DropRecords())
+
+
 def create_middleware(app, config: ObservabilityConfig):
     """Create and attach observability middleware to FastAPI app.
 
@@ -170,6 +195,8 @@ def create_middleware(app, config: ObservabilityConfig):
     _set_config_service(config.service_name)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
+    if config.suppress_server_access_log:
+        _suppress_server_access_log()
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)

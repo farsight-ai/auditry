@@ -196,6 +196,11 @@ config = ObservabilityConfig(
     # Whether to log response bodies (same caveat as request bodies)
     log_response_body=False,
 
+    # Turn off uvicorn's access log (default: True). The middleware already logs
+    # every request; uvicorn's access line repeats it in plain text, with the raw
+    # query string. FastAPI only. See Running Under uvicorn.
+    suppress_server_access_log=True,
+
     # OpenTelemetry tracing (requires auditry[otel]; from auditry import
     # TracingConfig). See Tracing (OpenTelemetry).
     tracing=TracingConfig(
@@ -982,6 +987,34 @@ All logs are structured JSON, ready for log aggregators:
 `correlation_id`, `trace_id` and `span_id` are optional fields: `correlation_id`
 appears whenever a context is bound, and `trace_id` / `span_id` only inside a
 valid OpenTelemetry span context.
+
+### Running Under uvicorn
+
+uvicorn gives its loggers plain-text handlers of its own. auditry takes them
+over, so a service's whole stdout stays single-line JSON:
+
+- `configure_logging()` drops the handlers on `uvicorn` and `uvicorn.error`, so
+  startup, shutdown and server-error lines go through the same formatter as
+  every other record.
+- `create_middleware()` (FastAPI) turns off uvicorn's access log. Each request
+  is already logged by the middleware, with query parameters redacted;
+  uvicorn's access line repeats it in plain text with the raw query string.
+  Set `suppress_server_access_log=False` to keep it.
+
+The uvicorn CLI configures its loggers before it imports the app, so calling
+both at import is enough.
+
+A server started in code (`uvicorn.run(app)`, or `uvicorn.Config(app)`)
+configures logging after the app is built, and with uvicorn's default
+`log_config` re-installs its handlers. The access log stays off anyway:
+`create_middleware()` also puts a filter on uvicorn's access logger that drops
+every record, and reconfiguring logging replaces a logger's handlers but keeps
+its filters. uvicorn's other lines do go back to plain text, so start the server
+with `log_config=None` to keep stdout all JSON:
+
+```python
+uvicorn.run(app, log_config=None)
+```
 
 ## Sensitive Data Handling
 
