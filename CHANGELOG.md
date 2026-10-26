@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.3 (2026-10-26)
+
+Output changes for Quart streamed responses: their lines lose `"body": null`,
+and their response headers now follow `log_response_headers` (off by default)
+and redaction. Other lines are unchanged, except that a request body sent
+without `Content-Length` or `Transfer-Encoding` (possible only over HTTP/2) is
+no longer marked `[BODY_LOGGING_DISABLED]`.
 
 ### Changed
 
