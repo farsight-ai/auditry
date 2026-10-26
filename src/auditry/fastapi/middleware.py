@@ -170,9 +170,19 @@ class _DropRecords(logging.Filter):
         super().__init__()
         self.taken_handlers = handlers
         self.taken_propagate = propagate
+        self.installed_handlers: list[logging.Handler] | None = None
 
     def filter(self, record: logging.LogRecord) -> bool:
         return False
+
+    def left_as_suppressed(self, access_logger: logging.Logger) -> bool:
+        # The empty list is matched by identity: uvicorn's access_log=False and gunicorn's
+        # worker leave the same empty, non-propagating state, each with a list of their own.
+        return (
+            access_logger.handlers is self.installed_handlers
+            and not access_logger.handlers
+            and not access_logger.propagate
+        )
 
 
 def _server_access_logger_and_drop() -> tuple[logging.Logger, _DropRecords | None]:
@@ -194,12 +204,14 @@ def _suppress_server_access_log() -> None:
     access_logger, drop = _server_access_logger_and_drop()
     taken = (access_logger.handlers, access_logger.propagate)
     if drop is None:
-        access_logger.addFilter(_DropRecords(*taken))
-    elif taken != ([], False):
+        drop = _DropRecords(*taken)
+        access_logger.addFilter(drop)
+    elif not drop.left_as_suppressed(access_logger):
         # Reconfigured since the last suppression; what is there now is what to give back.
         drop.taken_handlers, drop.taken_propagate = taken
     _drop_own_handlers(access_logger)
     access_logger.propagate = False
+    drop.installed_handlers = access_logger.handlers
 
 
 def _restore_server_access_log() -> None:
@@ -210,7 +222,7 @@ def _restore_server_access_log() -> None:
     if drop is None:
         return
     access_logger.removeFilter(drop)
-    if not access_logger.handlers and not access_logger.propagate:
+    if drop.left_as_suppressed(access_logger):
         access_logger.handlers = drop.taken_handlers
         access_logger.propagate = drop.taken_propagate
 

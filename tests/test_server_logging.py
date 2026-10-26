@@ -175,7 +175,7 @@ def server_loggers_restored():
 
 
 def _access_lines_once_uvicorn_is_configured(
-    capsys, app_config=None, earlier_app_configs=(), **server_config
+    capsys, app_config=None, earlier_app_configs=(), later_app_configs=(), **server_config
 ) -> list[str]:
     """The output of an access line logged as uvicorn logs it, once uvicorn is configured."""
     configure_logging(service="svc")
@@ -183,6 +183,8 @@ def _access_lines_once_uvicorn_is_configured(
         _app(**earlier_app_config)
     app = _app(**(app_config or {}))
     uvicorn.Config(app, **server_config)
+    for later_app_config in later_app_configs:
+        _app(**later_app_config)
     capsys.readouterr()
     logging.getLogger("uvicorn.access").info(
         '%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET", "/hook?token=SECRET", "1.1", 200
@@ -224,3 +226,13 @@ def test_a_later_app_that_keeps_the_access_log_gets_uvicorns_line(server_loggers
     )
 
     assert len(lines) == 1
+
+
+def test_a_later_app_that_keeps_the_access_log_leaves_uvicorns_access_log_false(
+    server_loggers_restored, capsys
+):
+    lines = _access_lines_once_uvicorn_is_configured(
+        capsys, access_log=False, later_app_configs=[{"suppress_server_access_log": False}]
+    )
+
+    assert lines == []
