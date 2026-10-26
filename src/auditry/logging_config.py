@@ -55,6 +55,12 @@ _config_service: str | None = None
 _full_tracebacks: bool = False
 _FULL_TRACEBACKS_ENV = "AUDITRY_FULL_TRACEBACKS"
 
+# uvicorn gives these loggers plain-text handlers of their own and stops them propagating, so
+# their lines would skip the JSON formatter on root. The access logger is not among them: the
+# FastAPI middleware owns request lines (see suppress_server_access_log).
+_SERVER_LOGGERS = ("uvicorn", "uvicorn.error")
+_SERVER_ACCESS_LOGGER = "uvicorn.access"
+
 # ---------------------------------------------------------------------------
 # Strict mode — the loud version of instrumentation, for non-production only.
 # ---------------------------------------------------------------------------
@@ -373,6 +379,26 @@ def configure_logging(
         root_logger.removeHandler(existing)
     root_logger.addHandler(handler)
     root_logger.setLevel(getattr(logging, level.upper()))
+    _route_server_loggers_to_root()
+
+
+def _route_server_loggers_to_root() -> None:
+    """Drops uvicorn's own handlers so its lines reach root and the JSON formatter.
+
+    The uvicorn CLI configures its loggers before it imports the app, so a configure_logging()
+    call at import runs after it. A server started in code after configure_logging() would
+    re-install them; start it with ``log_config=None``.
+    """
+    for name in _SERVER_LOGGERS:
+        server_logger = logging.getLogger(name)
+        _drop_own_handlers(server_logger)
+        server_logger.propagate = True
+
+
+def _drop_own_handlers(server_logger: logging.Logger) -> None:
+    # Rebound, not cleared in place: gunicorn's UvicornWorker gives uvicorn's loggers gunicorn's
+    # own handler lists, which clearing would empty for gunicorn too.
+    server_logger.handlers = []
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

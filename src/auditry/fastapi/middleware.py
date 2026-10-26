@@ -1,5 +1,6 @@
 """FastAPI middleware for observability."""
 
+import logging
 import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
@@ -7,7 +8,7 @@ from fastapi import Request
 
 from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _set_config_service
+from ..logging_config import _SERVER_ACCESS_LOGGER, _drop_own_handlers, _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_scope
 from ..propagation import _set_correlation_header
@@ -161,6 +162,71 @@ class FastAPIMiddleware:
             self.request_adapter.clear_cache(request)
 
 
+class _DropRecords(logging.Filter):
+    """Rejects every record logged directly on the logger it is attached to, and holds the
+    handlers and propagation it took from that logger so they can be given back."""
+
+    def __init__(self, handlers: list[logging.Handler], propagate: bool) -> None:
+        super().__init__()
+        self.taken_handlers = handlers
+        self.taken_propagate = propagate
+        self.installed_handlers: list[logging.Handler] | None = None
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+    def left_as_suppressed(self, access_logger: logging.Logger) -> bool:
+        # The empty list is matched by identity: uvicorn's access_log=False and gunicorn's
+        # worker leave the same empty, non-propagating state, each with a list of their own.
+        return (
+            access_logger.handlers is self.installed_handlers
+            and not access_logger.handlers
+            and not access_logger.propagate
+        )
+
+
+def _server_access_logger_and_drop() -> tuple[logging.Logger, _DropRecords | None]:
+    access_logger = logging.getLogger(_SERVER_ACCESS_LOGGER)
+    drop = next((f for f in access_logger.filters if isinstance(f, _DropRecords)), None)
+    return access_logger, drop
+
+
+def _suppress_server_access_log() -> None:
+    """Turns off uvicorn's access line, which repeats the middleware's request line in plain
+    text with the raw query string, outside redaction.
+
+    Two layers. With no handler and no propagation, uvicorn does not build access lines at all:
+    it checks for a handler as each connection opens, the state ``--no-access-log`` leaves. A
+    server configured later, as ``uvicorn.run(app)`` is, re-installs that handler; the filter
+    still drops the lines, because ``logging.config.dictConfig`` replaces a logger's handlers
+    but keeps its filters (tests/test_server_logging.py fails if that ever changes).
+    """
+    access_logger, drop = _server_access_logger_and_drop()
+    taken = (access_logger.handlers, access_logger.propagate)
+    if drop is None:
+        drop = _DropRecords(*taken)
+        access_logger.addFilter(drop)
+    elif not drop.left_as_suppressed(access_logger):
+        # Reconfigured since the last suppression; what is there now is what to give back.
+        drop.taken_handlers, drop.taken_propagate = taken
+    _drop_own_handlers(access_logger)
+    access_logger.propagate = False
+    drop.installed_handlers = access_logger.handlers
+
+
+def _restore_server_access_log() -> None:
+    """Undoes ``_suppress_server_access_log``: the logger is process-wide, so the most recent
+    ``create_middleware()`` decides. Handlers and propagation are given back only while the
+    logger is as suppression left it; a server configured since has set its own."""
+    access_logger, drop = _server_access_logger_and_drop()
+    if drop is None:
+        return
+    access_logger.removeFilter(drop)
+    if drop.left_as_suppressed(access_logger):
+        access_logger.handlers = drop.taken_handlers
+        access_logger.propagate = drop.taken_propagate
+
+
 def create_middleware(app, config: ObservabilityConfig):
     """Create and attach observability middleware to FastAPI app.
 
@@ -170,6 +236,10 @@ def create_middleware(app, config: ObservabilityConfig):
     _set_config_service(config.service_name)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
+    if config.suppress_server_access_log:
+        _suppress_server_access_log()
+    else:
+        _restore_server_access_log()
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)

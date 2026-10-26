@@ -172,6 +172,16 @@ class ObservabilityConfig(BaseModel):
             "paths are merged in by default (see include_default_excluded_paths)."
         ),
     )
+    suppress_server_access_log: bool = Field(
+        default=True,
+        description=(
+            "Turn off uvicorn's access log when the middleware is created. The "
+            "middleware already logs every request, redacted; uvicorn's line repeats "
+            "it in plain text with the raw query string. FastAPI only. Holds for "
+            "a server started with uvicorn.run(app) too. uvicorn's access logger "
+            "is process-wide: the last create_middleware() call decides."
+        ),
+    )
     tracing: TracingConfig = Field(
         default_factory=TracingConfig,
         description=(
