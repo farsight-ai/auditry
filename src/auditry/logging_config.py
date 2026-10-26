@@ -59,6 +59,7 @@ _FULL_TRACEBACKS_ENV = "AUDITRY_FULL_TRACEBACKS"
 # their lines would skip the JSON formatter on root. The access logger is not among them: the
 # FastAPI middleware owns request lines (see suppress_server_access_log).
 _SERVER_LOGGERS = ("uvicorn", "uvicorn.error")
+_SERVER_ACCESS_LOGGER = "uvicorn.access"
 
 # ---------------------------------------------------------------------------
 # Strict mode — the loud version of instrumentation, for non-production only.
@@ -390,8 +391,14 @@ def _route_server_loggers_to_root() -> None:
     """
     for name in _SERVER_LOGGERS:
         server_logger = logging.getLogger(name)
-        server_logger.handlers.clear()
+        _drop_own_handlers(server_logger)
         server_logger.propagate = True
+
+
+def _drop_own_handlers(server_logger: logging.Logger) -> None:
+    # Rebound, not cleared in place: gunicorn's UvicornWorker gives uvicorn's loggers gunicorn's
+    # own handler lists, which clearing would empty for gunicorn too.
+    server_logger.handlers = []
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

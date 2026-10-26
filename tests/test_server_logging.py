@@ -14,9 +14,10 @@ from fastapi import FastAPI
 
 from auditry import ObservabilityConfig, configure_logging
 from auditry.fastapi import create_middleware
+from auditry.logging_config import _SERVER_ACCESS_LOGGER, _SERVER_LOGGERS
 from tests.process_state import reset_process_state
 
-_SERVER_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
+_SERVER_LOGGER_NAMES = (*_SERVER_LOGGERS, _SERVER_ACCESS_LOGGER)
 
 # The shape of uvicorn.config.LOGGING_CONFIG: handlers on `uvicorn` and `uvicorn.access`,
 # neither propagating, and `uvicorn.error` reaching `uvicorn`'s handler.
@@ -129,6 +130,35 @@ def test_a_later_app_that_keeps_the_access_log_gets_uvicorns_handler_back(uvicor
         False,
         [],
     )
+
+
+_GUNICORN_LOGGER_FOR = {"uvicorn.error": "gunicorn.error", "uvicorn.access": "gunicorn.access"}
+
+
+@pytest.fixture
+def gunicorn_handler():
+    """gunicorn's loggers with one handler, emptied afterwards."""
+    handler = logging.NullHandler()
+    for gunicorn_name in _GUNICORN_LOGGER_FOR.values():
+        logging.getLogger(gunicorn_name).handlers = [handler]
+    yield handler
+    for gunicorn_name in _GUNICORN_LOGGER_FOR.values():
+        logging.getLogger(gunicorn_name).handlers = []
+
+
+def test_gunicorns_handler_lists_keep_their_handlers(uvicorn_configured, gunicorn_handler):
+    # gunicorn's UvicornWorker binds uvicorn's loggers to gunicorn's own handler lists.
+    for uvicorn_name, gunicorn_name in _GUNICORN_LOGGER_FOR.items():
+        logging.getLogger(uvicorn_name).handlers = logging.getLogger(gunicorn_name).handlers
+
+    configure_logging(service="svc")
+    _app()
+
+    for gunicorn_name in _GUNICORN_LOGGER_FOR.values():
+        assert (gunicorn_name, logging.getLogger(gunicorn_name).handlers) == (
+            gunicorn_name,
+            [gunicorn_handler],
+        )
 
 
 # A server started in code, `uvicorn.run(app)`, configures logging when it builds its Config:

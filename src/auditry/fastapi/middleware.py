@@ -8,7 +8,7 @@ from fastapi import Request
 
 from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _set_config_service
+from ..logging_config import _SERVER_ACCESS_LOGGER, _drop_own_handlers, _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_scope
 from ..propagation import _set_correlation_header
@@ -176,7 +176,7 @@ class _DropRecords(logging.Filter):
 
 
 def _server_access_logger_and_drop() -> tuple[logging.Logger, _DropRecords | None]:
-    access_logger = logging.getLogger("uvicorn.access")
+    access_logger = logging.getLogger(_SERVER_ACCESS_LOGGER)
     drop = next((f for f in access_logger.filters if isinstance(f, _DropRecords)), None)
     return access_logger, drop
 
@@ -192,13 +192,13 @@ def _suppress_server_access_log() -> None:
     but keeps its filters (tests/test_server_logging.py fails if that ever changes).
     """
     access_logger, drop = _server_access_logger_and_drop()
-    taken = (list(access_logger.handlers), access_logger.propagate)
+    taken = (access_logger.handlers, access_logger.propagate)
     if drop is None:
         access_logger.addFilter(_DropRecords(*taken))
     elif taken != ([], False):
         # Reconfigured since the last suppression; what is there now is what to give back.
         drop.taken_handlers, drop.taken_propagate = taken
-    access_logger.handlers.clear()
+    _drop_own_handlers(access_logger)
     access_logger.propagate = False
 
 
@@ -211,8 +211,7 @@ def _restore_server_access_log() -> None:
         return
     access_logger.removeFilter(drop)
     if not access_logger.handlers and not access_logger.propagate:
-        for handler in drop.taken_handlers:
-            access_logger.addHandler(handler)
+        access_logger.handlers = drop.taken_handlers
         access_logger.propagate = drop.taken_propagate
 
 
