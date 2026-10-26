@@ -1,10 +1,11 @@
 """Basic tests for Quart middleware functionality."""
 
 import pytest
-from quart import Quart, abort
+from quart import Quart, Response, abort, request
 
 from auditry import ObservabilityConfig, configure_logging
 from auditry.quart import create_middleware
+from tests.field_flags import FIELD_FLAGS, config_with_field_off
 
 configure_logging(level="INFO")
 
@@ -50,6 +51,103 @@ def quiet_config(**kwargs):
     return ObservabilityConfig(
         service_name="svc", log_request_body=False, log_response_body=False, **kwargs
     )
+
+
+def echo_app(config=None):
+    """Body logging off unless ``config`` says otherwise; the route reads the
+    request body and returns one."""
+    app = create_middleware(Quart(__name__), config or quiet_config())
+
+    @app.post("/echo")
+    async def echo():
+        return {"received": len(await request.get_data())}
+
+    return app
+
+
+def streaming_app(config):
+    """The route streams its body and sets a cookie."""
+    app = create_middleware(Quart(__name__), config)
+
+    @app.get("/stream")
+    async def stream():
+        async def generate():
+            yield b"data: x\n\n"
+
+        response = Response(generate(), mimetype="text/event-stream")
+        response.headers["Set-Cookie"] = "session=abc123"
+        return response
+
+    return app
+
+
+CUSTOMER_TEXT = b'{"prompt": "customer text"}'
+# Quart's test client sends no Content-Length of its own; a real client does.
+DECLARED_BODY = {"Content-Length": str(len(CUSTOMER_TEXT))}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flag", "side", "field"), FIELD_FLAGS)
+async def test_a_field_logged_off_never_reaches_the_logger(handed_to_logger, flag, side, field):
+    client = echo_app(config_with_field_off(flag)).test_client()
+
+    await client.post(
+        "/echo",
+        query_string={"q": "customer text"},
+        data=CUSTOMER_TEXT,
+        headers=DECLARED_BODY,
+    )
+
+    (raw_data,) = handed_to_logger[side]
+    assert raw_data[field] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_streamed_response_headers_are_not_logged_when_header_logging_is_off(log_lines):
+    configure_logging(service="svc", environment="prod")
+    client = streaming_app(quiet_config()).test_client()
+
+    await client.get("/stream")
+
+    (line,) = auditry_lines(log_lines)
+    assert "headers" not in line["response"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_streamed_response_headers_are_redacted(log_lines):
+    configure_logging(service="svc", environment="prod")
+    client = streaming_app(quiet_config(log_response_headers=True)).test_client()
+
+    await client.get("/stream")
+
+    (line,) = auditry_lines(log_lines)
+    assert line["response"]["headers"]["Set-Cookie"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_disabled_request_body_is_marked_in_the_log(log_lines):
+    configure_logging(service="svc", environment="prod")
+    client = echo_app().test_client()
+
+    await client.post("/echo", data=CUSTOMER_TEXT, headers=DECLARED_BODY)
+
+    (line,) = auditry_lines(log_lines)
+    assert line["request"]["body"] == "[BODY_LOGGING_DISABLED]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("clean_logging")
+async def test_disabled_response_body_is_marked_in_the_log(log_lines):
+    configure_logging(service="svc", environment="prod")
+    client = echo_app().test_client()
+
+    await client.post("/echo", data=CUSTOMER_TEXT, headers=DECLARED_BODY)
+
+    (line,) = auditry_lines(log_lines)
+    assert line["response"]["body"] == "[BODY_LOGGING_DISABLED]"
 
 
 @pytest.mark.asyncio

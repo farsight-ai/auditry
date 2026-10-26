@@ -6,7 +6,20 @@ The design prioritizes clarity, maintainability, and proper separation of concer
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any
+
+
+def declares_body(headers: Mapping[str, str]) -> bool:
+    """Whether HTTP headers announce a body (RFC 9112 section 6): a
+    Transfer-Encoding, or a Content-Length above zero. Names match in any case."""
+    lowered = {name.lower(): value for name, value in headers.items()}
+    if "transfer-encoding" in lowered:
+        return True
+    try:
+        return int(lowered.get("content-length", 0)) > 0
+    except ValueError:
+        return False
 
 
 class BaseRequestAdapter(ABC):
@@ -61,20 +74,33 @@ class BaseRequestAdapter(ABC):
         """
         pass
 
-    async def extract_all(self, request: Any) -> dict[str, Any]:
+    async def extract_all(
+        self,
+        request: Any,
+        *,
+        include_headers: bool = True,
+        include_query_params: bool = True,
+        include_body: bool = True,
+    ) -> dict[str, Any]:
         """
         Extract all request data into a standardized dictionary.
 
         This is a template method that calls all the extract_* methods
-        and returns a consistent structure.
+        and returns a consistent structure. A field whose ``include_*`` flag
+        is False is None, and a body left out is never read; ``has_body``
+        says whether the headers declare one.
         """
+        headers = await self.extract_headers(request)
         return {
             "method": await self.extract_method(request),
             "path": await self.extract_path(request),
-            "headers": await self.extract_headers(request),
-            "query_params": await self.extract_query_params(request),
+            "headers": headers if include_headers else None,
+            "query_params": (
+                await self.extract_query_params(request) if include_query_params else None
+            ),
             "path_params": await self.extract_path_params(request),
-            "body": await self.extract_body(request),
+            "body": await self.extract_body(request) if include_body else None,
+            "has_body": declares_body(headers),
             "user_id": await self.extract_user_id(request),
         }
 
@@ -107,17 +133,27 @@ class BaseResponseAdapter(ABC):
         """
         pass
 
-    async def extract_all(self, response: Any) -> dict[str, Any]:
+    async def extract_all(
+        self,
+        response: Any,
+        *,
+        include_headers: bool = True,
+        include_body: bool = True,
+    ) -> dict[str, Any]:
         """
         Extract all response data into a standardized dictionary.
 
         This is a template method that calls all the extract_* methods
-        and returns a consistent structure.
+        and returns a consistent structure. A field whose ``include_*`` flag
+        is False is None, and a body left out is never read; ``has_body``
+        says whether the headers declare one.
         """
+        headers = await self.extract_headers(response)
         return {
             "status_code": await self.extract_status_code(response),
-            "headers": await self.extract_headers(response),
-            "body": await self.extract_body(response),
+            "headers": headers if include_headers else None,
+            "body": await self.extract_body(response) if include_body else None,
+            "has_body": declares_body(headers),
         }
 
 

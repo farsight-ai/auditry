@@ -1067,9 +1067,20 @@ config = ObservabilityConfig(
 )
 ```
 
-When body logging is disabled, logs will show `[BODY_LOGGING_DISABLED]` instead
-of the actual content, while still logging metadata like headers, status codes,
-and timing information.
+When body logging is disabled, the middleware never reads the body: on FastAPI
+the app reads the request body straight from the server, unbuffered, and
+response chunks pass through without being kept; on Quart the request's and
+response's `get_data()` are left to the app. Logs show `[BODY_LOGGING_DISABLED]`
+in place of a body that was left out, while still logging metadata like
+headers, status codes, and timing information:
+
+- a request, or a Quart response, has a body when its headers declare one (a
+  `Content-Length` above 0, or a `Transfer-Encoding`);
+- a FastAPI response has one when it sends any body bytes, except a
+  `text/event-stream` response, which is never marked.
+
+`log_request_headers`, `log_response_headers` and `log_query_params` work the
+same way: a field whose flag is `False` is not extracted for logging at all.
 
 Set both flags explicitly. Bodies are user-supplied content, and field-name
 redaction cannot reliably scrub free text: a prompt, an uploaded document, or a

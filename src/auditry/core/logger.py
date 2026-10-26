@@ -14,6 +14,14 @@ import structlog
 from ..models import BusinessEventConfig, ObservabilityConfig
 from ..redaction import redact_data, redact_headers
 
+BODY_LOGGING_DISABLED = "[BODY_LOGGING_DISABLED]"
+
+
+def _has_body(raw_data: dict[str, Any]) -> bool:
+    """Whether a request or response carried a body. Middleware does not read a
+    body it will not log; it says in ``has_body`` whether there was one."""
+    return bool(raw_data.get("body") or raw_data.get("has_body"))
+
 
 class RequestResponseLogger:
     """
@@ -84,8 +92,8 @@ class RequestResponseLogger:
         # Parse and redact body (only if configured to log request body)
         if self.config.log_request_body and raw_data.get("body"):
             prepared["body"] = self._parse_and_redact_body(raw_data["body"])
-        elif raw_data.get("body") and not self.config.log_request_body:
-            prepared["body"] = "[BODY_LOGGING_DISABLED]"
+        elif not self.config.log_request_body and _has_body(raw_data):
+            prepared["body"] = BODY_LOGGING_DISABLED
 
         return prepared
 
@@ -115,8 +123,8 @@ class RequestResponseLogger:
         # Parse and redact body (only if configured to log response body)
         if self.config.log_response_body and raw_data.get("body"):
             prepared["body"] = self._parse_and_redact_body(raw_data["body"])
-        elif raw_data.get("body") and not self.config.log_response_body:
-            prepared["body"] = "[BODY_LOGGING_DISABLED]"
+        elif not self.config.log_response_body and _has_body(raw_data):
+            prepared["body"] = BODY_LOGGING_DISABLED
 
         return prepared
 

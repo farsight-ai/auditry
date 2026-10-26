@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.6.3 (2026-10-26)
+
+Output changes for Quart streamed responses: their lines lose `"body": null`,
+and their response headers now follow `log_response_headers` (off by default)
+and redaction. FastAPI's `execution_duration_ms` now includes the time the
+request body takes to arrive; check any latency query, dashboard or alarm that
+reads it. Other lines are unchanged, except that a request body sent without
+`Content-Length` or `Transfer-Encoding` (possible only over HTTP/2) is no
+longer marked `[BODY_LOGGING_DISABLED]`.
+
+### Changed
+
+- **A field whose logging is off is never extracted.** With
+  `log_request_body=False` the FastAPI middleware no longer buffers the request
+  body before the app runs; the app reads it from the server as it arrives.
+  With `log_response_body=False` it keeps none of the response chunks it passes
+  on. Quart's hooks no longer call `get_data()` on the request or response.
+  `log_request_headers`, `log_response_headers` and `log_query_params` set to
+  `False` likewise keep those fields from reaching the logger. Each used to be
+  extracted in full and handed to the logger, which then left it out of the
+  line.
+- A request's `[BODY_LOGGING_DISABLED]` marks a body its headers declare (a
+  `Content-Length` above 0, or a `Transfer-Encoding`), not one that was read.
+  Under HTTP/1.1 a request body always has one of the two.
+- **FastAPI: `execution_duration_ms` covers receiving the request body**, with
+  either `log_request_body` setting, as on Quart. The clock used to start after
+  the middleware had buffered the body, so the time a slow upload took did not
+  count.
+- Quart: a streamed response's line has no `body: null`.
+
+### Fixed
+
+- Quart: a streamed response's line logged every response header raw, with
+  `Set-Cookie` unredacted, whatever `log_response_headers` said. It now goes
+  through the same header flag and redaction as any other response.
+
+### Added
+
+- `BaseRequestAdapter.extract_all()` takes keyword-only `include_headers`,
+  `include_query_params` and `include_body`, and
+  `BaseResponseAdapter.extract_all()` takes `include_headers` and
+  `include_body` (all default `True`). A field left out is None, and a body left
+  out is never read. Both results carry `has_body`: whether the headers declare
+  a body.
+- `auditry.core.base.declares_body(headers)`.
+
 ## 0.6.2 (2026-10-23)
 
 Default output changes for FastAPI services under uvicorn; check any query,

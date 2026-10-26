@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from auditry.core import RequestResponseLogger
 from auditry.span_scrubbing import set_span_scrub_policy
 from tests.process_state import reset_process_state
 
@@ -83,6 +84,27 @@ def clean_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
     reset_process_state()
     yield
     reset_process_state()
+
+
+@pytest.fixture
+def handed_to_logger(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """The raw data of every request and response the middleware hands
+    RequestResponseLogger, under ``"request"`` and ``"response"``."""
+    handed: dict[str, list[dict[str, Any]]] = {"request": [], "response": []}
+    prepare_request = RequestResponseLogger.prepare_request_data
+    prepare_response = RequestResponseLogger.prepare_response_data
+
+    def record_request(self, raw_data, correlation_id=None):
+        handed["request"].append(raw_data)
+        return prepare_request(self, raw_data, correlation_id)
+
+    def record_response(self, raw_data):
+        handed["response"].append(raw_data)
+        return prepare_response(self, raw_data)
+
+    monkeypatch.setattr(RequestResponseLogger, "prepare_request_data", record_request)
+    monkeypatch.setattr(RequestResponseLogger, "prepare_response_data", record_response)
+    return handed
 
 
 @pytest.fixture
