@@ -14,7 +14,6 @@ from quart import (
     websocket,
 )
 from quart.signals import got_request_exception, request_started, websocket_started
-from quart.wrappers.response import IterableBody
 from werkzeug.exceptions import HTTPException
 
 from ..core import BaseMiddleware, RequestResponseLogger
@@ -78,8 +77,13 @@ class QuartMiddleware(BaseMiddleware):
             request.observability_correlation_id = get_correlation_id()
             request.observability_excluded = False
 
-            # extract and cache request body early
-            raw_request_data = await self.request_adapter.extract_all(request)
+            # extract and cache request body early; fields not logged are not extracted
+            raw_request_data = await self.request_adapter.extract_all(
+                request,
+                include_headers=self.config.log_request_headers,
+                include_query_params=self.config.log_query_params,
+                include_body=self.config.log_request_body,
+            )
             request.observability_raw_data = raw_request_data
 
             request.observability_request_data = self.logger.prepare_request_data(
@@ -102,38 +106,6 @@ class QuartMiddleware(BaseMiddleware):
             if not hasattr(request, "observability_start_time"):
                 return response
 
-            # Check if this is a streaming response - if so, handle it separately
-            if hasattr(response, "response") and isinstance(response.response, IterableBody):
-                # hands off the stream
-                duration_ms = (time.time() - request.observability_start_time) * 1000
-
-                # Get stored correlation ID from before_request
-                correlation_id = getattr(request, "observability_correlation_id", None)
-                request_data = getattr(request, "observability_request_data", {})
-
-                # Re-extract user_id (might have been set during request processing)
-                user_id = await self.request_adapter.extract_user_id(request)
-
-                # Log with minimal response data (no body for streaming)
-                self.logger.log_success(
-                    request_data=request_data,
-                    response_data={
-                        "status_code": response.status_code
-                        if hasattr(response, "status_code")
-                        else 200,
-                        "headers": dict(response.headers) if hasattr(response, "headers") else {},
-                        "body": None,  # Don't try to extract body for streaming
-                    },
-                    duration_ms=duration_ms,
-                    correlation_id=correlation_id,
-                    user_id=user_id,
-                )
-
-                # Clear cache and return immediately
-                self.request_adapter.clear_cache(request)
-                return response
-
-            # Non-streaming response handling
             # Calculate duration
             duration_ms = (time.time() - request.observability_start_time) * 1000
 
@@ -144,8 +116,13 @@ class QuartMiddleware(BaseMiddleware):
             # Re-extract user_id (might have been set during request processing)
             user_id = await self.request_adapter.extract_user_id(request)
 
-            # Extract and prepare response data
-            raw_response_data = await self.response_adapter.extract_all(response)
+            # Extract and prepare response data. The adapter never reads a
+            # streamed body, so the stream is left for the server to send.
+            raw_response_data = await self.response_adapter.extract_all(
+                response,
+                include_headers=self.config.log_response_headers,
+                include_body=self.config.log_response_body,
+            )
             response_data = self.logger.prepare_response_data(raw_response_data)
 
             # Log successful request

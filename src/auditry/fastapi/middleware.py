@@ -5,7 +5,9 @@ import time
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
+from starlette.types import Message, Receive
 
+from ..core.base import declares_body
 from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
 from ..logging_config import _SERVER_ACCESS_LOGGER, _drop_own_handlers, _set_config_service
@@ -43,37 +45,14 @@ class FastAPIMiddleware:
         path = scope["path"]
         method = scope["method"]
 
-        # Buffer the request body for logging
-        body_chunks = []
-        message = await receive()
+        # With request body logging off the app reads the body straight from
+        # the server: the middleware never sees it.
+        raw_body = None
+        app_receive = receive
+        if self.config.log_request_body:
+            raw_body, app_receive = await _buffer_request_body(receive)
 
-        while message["type"] == "http.request":
-            body = message.get("body", b"")
-            if body:
-                body_chunks.append(body)
-            if not message.get("more_body", False):
-                break
-            message = await receive()
-
-        raw_body = b"".join(body_chunks)
-
-        # Simple replay function for the buffered body
-        body_sent = False
-
-        async def replay_body():
-            nonlocal body_sent
-            if not body_sent:
-                body_sent = True
-                return {"type": "http.request", "body": raw_body, "more_body": False}
-            # Once the buffered body is replayed, defer to the REAL receive so
-            # http.disconnect (and any further client messages) propagate to the
-            # app. Returning a synthetic http.request here instead makes
-            # StreamingResponse.listen_for_disconnect's `while True: await receive()`
-            # a non-yielding hot loop (the coroutine never awaits real I/O), which
-            # starves the single event loop and wedges the process.
-            return await receive()
-
-        request = Request(scope, receive=replay_body)
+        request = Request(scope, receive=app_receive)
 
         # Prepare logging context
         correlation_id = get_correlation_id()
@@ -83,10 +62,11 @@ class FastAPIMiddleware:
         raw_request_data = {
             "method": method,
             "path": path,
-            "headers": dict(request.headers),
-            "query_params": dict(request.query_params),
+            "headers": dict(request.headers) if self.config.log_request_headers else None,
+            "query_params": (dict(request.query_params) if self.config.log_query_params else None),
             "path_params": dict(getattr(request, "path_params", {})),
             "body": raw_body,
+            "has_body": declares_body(request.headers),
             "user_id": await self.request_adapter.extract_user_id(request),
         }
         request_data = self.logger.prepare_request_data(raw_request_data, correlation_id)
@@ -94,10 +74,11 @@ class FastAPIMiddleware:
         # Capture response info
         response_info = {"status": None, "headers": {}}
         response_body_chunks: list[bytes] = []
+        response_has_body = False
         is_streaming = False
 
         async def capture_response(message):
-            nonlocal is_streaming
+            nonlocal is_streaming, response_has_body
 
             if message["type"] == "http.response.start":
                 response_info["status"] = message["status"]
@@ -112,15 +93,18 @@ class FastAPIMiddleware:
                     is_streaming = True
 
             elif message["type"] == "http.response.body" and not is_streaming:
+                # With response body logging off, only whether there was a body is kept.
                 body = message.get("body", b"")
                 if body:
-                    response_body_chunks.append(body)
+                    response_has_body = True
+                    if self.config.log_response_body:
+                        response_body_chunks.append(body)
 
             await send(message)
 
         try:
             # Process the request
-            await self.app(scope, replay_body, capture_response)
+            await self.app(scope, app_receive, capture_response)
 
             # Log success
             duration_ms = (time.time() - start_time) * 1000
@@ -130,8 +114,9 @@ class FastAPIMiddleware:
 
             raw_response_data = {
                 "status_code": response_info["status"],
-                "headers": response_info["headers"],
+                "headers": response_info["headers"] if self.config.log_response_headers else None,
                 "body": response_body,
+                "has_body": response_has_body,
             }
             response_data = self.logger.prepare_response_data(raw_response_data)
 
@@ -160,6 +145,39 @@ class FastAPIMiddleware:
         finally:
             # Clean up
             self.request_adapter.clear_cache(request)
+
+
+async def _buffer_request_body(receive: Receive) -> tuple[bytes, Receive]:
+    """Reads the whole request body, and returns it with a receive that hands
+    it to the app once and then defers to the server's."""
+    body_chunks = []
+    message = await receive()
+
+    while message["type"] == "http.request":
+        body = message.get("body", b"")
+        if body:
+            body_chunks.append(body)
+        if not message.get("more_body", False):
+            break
+        message = await receive()
+
+    raw_body = b"".join(body_chunks)
+    body_sent = False
+
+    async def replay_body() -> Message:
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": raw_body, "more_body": False}
+        # Once the buffered body is replayed, defer to the REAL receive so
+        # http.disconnect (and any further client messages) propagate to the
+        # app. Returning a synthetic http.request here instead makes
+        # StreamingResponse.listen_for_disconnect's `while True: await receive()`
+        # a non-yielding hot loop (the coroutine never awaits real I/O), which
+        # starves the single event loop and wedges the process.
+        return await receive()
+
+    return raw_body, replay_body
 
 
 class _DropRecords(logging.Filter):

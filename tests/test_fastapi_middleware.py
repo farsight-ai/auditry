@@ -3,13 +3,14 @@
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from auditry import ObservabilityConfig, configure_logging
-from auditry.fastapi import create_middleware
+from auditry.fastapi import FastAPIMiddleware, create_middleware
 from auditry.models import BusinessEventConfig
+from tests.field_flags import FIELD_FLAGS, config_with_field_off
 
 configure_logging(level="INFO")
 
@@ -120,6 +121,107 @@ def test_response_body_not_logged_when_disabled():
 
     body = logged_response["response_data"].get("body")
     assert body == "[BODY_LOGGING_DISABLED]"
+
+
+def bodies_off_config():
+    return ObservabilityConfig(
+        service_name="test-service", log_request_body=False, log_response_body=False
+    )
+
+
+CUSTOMER_TEXT = b'{"prompt": "customer text"}'
+
+
+def echo_app(config):
+    """The route reads the request body and returns one."""
+    app = FastAPI()
+
+    @app.post("/echo")
+    async def echo(request: Request):
+        return {"received": len(await request.body())}
+
+    return create_middleware(app, config)
+
+
+def logged_success(app, make_request):
+    """The keyword arguments log_success got for the request ``make_request`` sends."""
+    logged = {}
+
+    with patch(
+        "auditry.fastapi.middleware.RequestResponseLogger.log_success",
+        side_effect=lambda **kwargs: logged.update(kwargs),
+    ):
+        make_request(TestClient(app))
+
+    return logged
+
+
+@pytest.mark.parametrize(("flag", "side", "field"), FIELD_FLAGS)
+def test_a_field_logged_off_never_reaches_the_logger(handed_to_logger, flag, side, field):
+    client = TestClient(echo_app(config_with_field_off(flag)))
+
+    client.post("/echo", params={"q": "customer text"}, content=CUSTOMER_TEXT)
+
+    (raw_data,) = handed_to_logger[side]
+    assert raw_data[field] is None
+
+
+def test_disabled_request_body_is_marked_in_the_log():
+    logged = logged_success(
+        echo_app(bodies_off_config()), lambda client: client.post("/echo", content=CUSTOMER_TEXT)
+    )
+
+    assert logged["request_data"]["body"] == "[BODY_LOGGING_DISABLED]"
+
+
+def test_disabled_streamed_response_body_is_marked_in_the_log():
+    """A streamed body declares no Content-Length; the chunks sent show there was one."""
+    app = FastAPI()
+
+    @app.get("/report.csv")
+    def report():
+        return StreamingResponse(iter([b"a,b\n"]), media_type="text/csv")
+
+    logged = logged_success(
+        create_middleware(app, bodies_off_config()), lambda client: client.get("/report.csv")
+    )
+
+    assert logged["response_data"]["body"] == "[BODY_LOGGING_DISABLED]"
+
+
+@pytest.mark.asyncio
+async def test_disabled_request_body_reaches_the_app_as_the_server_sent_it():
+    """Unbuffered: the app reads each chunk from the server's own receive."""
+    chunks = [
+        {"type": "http.request", "body": b"first", "more_body": True},
+        {"type": "http.request", "body": b"second", "more_body": False},
+    ]
+    from_server = iter(chunks)
+    app_received = []
+
+    async def receive():
+        return next(from_server, {"type": "http.disconnect"})
+
+    async def send(message):
+        pass
+
+    async def app(scope, receive, send):
+        app_received.extend([await receive(), await receive()])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/upload",
+        "headers": [],
+        "query_string": b"",
+    }
+    middleware = FastAPIMiddleware(app, bodies_off_config())
+
+    await middleware(scope, receive, send)
+
+    assert app_received == chunks
 
 
 def test_business_event_extracted_from_response_body():
