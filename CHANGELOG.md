@@ -3,7 +3,10 @@
 ## 0.6.2 (2026-10-23)
 
 Default output changes for FastAPI services under uvicorn; check any query,
-dashboard or alarm that reads uvicorn's access lines before upgrading.
+dashboard or alarm that reads uvicorn's access lines before upgrading. uvicorn's
+`Exception in ASGI application` line is now JSON at level `error`, next to the
+middleware's own error line for the same request, so a `$.level = "error"`
+count (such as an error-count alarm) sees each unhandled exception twice.
 
 ### Changed
 

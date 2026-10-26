@@ -995,7 +995,9 @@ over, so a service's whole stdout stays single-line JSON:
 
 - `configure_logging()` drops the handlers on `uvicorn` and `uvicorn.error`, so
   startup, shutdown and server-error lines go through the same formatter as
-  every other record.
+  every other record. An exception that escapes the app is logged twice at
+  level `error`: by the middleware, and by uvicorn as `Exception in ASGI
+  application`. A `$.level = "error"` count sees each one twice.
 - `create_middleware()` (FastAPI) turns off uvicorn's access log. Each request
   is already logged by the middleware, with query parameters redacted;
   uvicorn's access line repeats it in plain text with the raw query string.
