@@ -116,6 +116,21 @@ def test_a_service_can_keep_uvicorns_access_log(uvicorn_configured):
     assert logging.getLogger("uvicorn.access").hasHandlers() is True
 
 
+def test_a_later_app_that_keeps_the_access_log_gets_uvicorns_handler_back(uvicorn_configured):
+    access_logger = logging.getLogger("uvicorn.access")
+    uvicorns_handlers = list(access_logger.handlers)
+    configure_logging(service="svc")
+
+    _app()
+    _app(suppress_server_access_log=False)
+
+    assert (access_logger.handlers, access_logger.propagate, access_logger.filters) == (
+        uvicorns_handlers,
+        False,
+        [],
+    )
+
+
 # A server started in code, `uvicorn.run(app)`, configures logging when it builds its Config:
 # after the app, and so after create_middleware(). These run that order with uvicorn itself.
 
@@ -129,9 +144,13 @@ def server_loggers_restored():
     reset_process_state()
 
 
-def _access_lines_once_uvicorn_is_configured(capsys, app_config=None, **server_config) -> list[str]:
+def _access_lines_once_uvicorn_is_configured(
+    capsys, app_config=None, earlier_app_configs=(), **server_config
+) -> list[str]:
     """The output of an access line logged as uvicorn logs it, once uvicorn is configured."""
     configure_logging(service="svc")
+    for earlier_app_config in earlier_app_configs:
+        _app(**earlier_app_config)
     app = _app(**(app_config or {}))
     uvicorn.Config(app, **server_config)
     capsys.readouterr()
@@ -164,6 +183,14 @@ def test_access_log_false_keeps_the_access_log_off(server_loggers_restored, caps
 def test_a_service_that_keeps_the_access_log_gets_uvicorns_line(server_loggers_restored, capsys):
     lines = _access_lines_once_uvicorn_is_configured(
         capsys, app_config={"suppress_server_access_log": False}
+    )
+
+    assert len(lines) == 1
+
+
+def test_a_later_app_that_keeps_the_access_log_gets_uvicorns_line(server_loggers_restored, capsys):
+    lines = _access_lines_once_uvicorn_is_configured(
+        capsys, app_config={"suppress_server_access_log": False}, earlier_app_configs=[{}]
     )
 
     assert len(lines) == 1

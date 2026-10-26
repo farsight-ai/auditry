@@ -999,7 +999,9 @@ over, so a service's whole stdout stays single-line JSON:
 - `create_middleware()` (FastAPI) turns off uvicorn's access log. Each request
   is already logged by the middleware, with query parameters redacted;
   uvicorn's access line repeats it in plain text with the raw query string.
-  Set `suppress_server_access_log=False` to keep it.
+  Set `suppress_server_access_log=False` to keep it. uvicorn's access logger
+  is process-wide, so with several apps the last `create_middleware()` call
+  decides.
 
 The uvicorn CLI configures its loggers before it imports the app, so calling
 both at import is enough.

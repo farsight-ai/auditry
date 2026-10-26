@@ -163,10 +163,22 @@ class FastAPIMiddleware:
 
 
 class _DropRecords(logging.Filter):
-    """Rejects every record logged directly on the logger it is attached to."""
+    """Rejects every record logged directly on the logger it is attached to, and holds the
+    handlers and propagation it took from that logger so they can be given back."""
+
+    def __init__(self, handlers: list[logging.Handler], propagate: bool) -> None:
+        super().__init__()
+        self.taken_handlers = handlers
+        self.taken_propagate = propagate
 
     def filter(self, record: logging.LogRecord) -> bool:
         return False
+
+
+def _server_access_logger_and_drop() -> tuple[logging.Logger, _DropRecords | None]:
+    access_logger = logging.getLogger("uvicorn.access")
+    drop = next((f for f in access_logger.filters if isinstance(f, _DropRecords)), None)
+    return access_logger, drop
 
 
 def _suppress_server_access_log() -> None:
@@ -179,11 +191,29 @@ def _suppress_server_access_log() -> None:
     still drops the lines, because ``logging.config.dictConfig`` replaces a logger's handlers
     but keeps its filters (tests/test_server_logging.py fails if that ever changes).
     """
-    access_logger = logging.getLogger("uvicorn.access")
+    access_logger, drop = _server_access_logger_and_drop()
+    taken = (list(access_logger.handlers), access_logger.propagate)
+    if drop is None:
+        access_logger.addFilter(_DropRecords(*taken))
+    elif taken != ([], False):
+        # Reconfigured since the last suppression; what is there now is what to give back.
+        drop.taken_handlers, drop.taken_propagate = taken
     access_logger.handlers.clear()
     access_logger.propagate = False
-    if not any(isinstance(existing, _DropRecords) for existing in access_logger.filters):
-        access_logger.addFilter(_DropRecords())
+
+
+def _restore_server_access_log() -> None:
+    """Undoes ``_suppress_server_access_log``: the logger is process-wide, so the most recent
+    ``create_middleware()`` decides. Handlers and propagation are given back only while the
+    logger is as suppression left it; a server configured since has set its own."""
+    access_logger, drop = _server_access_logger_and_drop()
+    if drop is None:
+        return
+    access_logger.removeFilter(drop)
+    if not access_logger.handlers and not access_logger.propagate:
+        for handler in drop.taken_handlers:
+            access_logger.addHandler(handler)
+        access_logger.propagate = drop.taken_propagate
 
 
 def create_middleware(app, config: ObservabilityConfig):
@@ -197,6 +227,8 @@ def create_middleware(app, config: ObservabilityConfig):
     _set_correlation_header(config.correlation_id_header)
     if config.suppress_server_access_log:
         _suppress_server_access_log()
+    else:
+        _restore_server_access_log()
     # Order matters: last added runs first
     app.add_middleware(FastAPIMiddleware, config=config)
     app.add_middleware(CorrelationIdMiddleware, header_name=config.correlation_id_header)

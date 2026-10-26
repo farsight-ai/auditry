@@ -11,7 +11,8 @@ dashboard or alarm that reads uvicorn's access lines before upgrading.
   leaves uvicorn's access logger with no handler, as `--no-access-log` does.
   The middleware already logs every request, with query parameters redacted;
   uvicorn's access line repeated it in plain text with the raw query string.
-  `ObservabilityConfig(suppress_server_access_log=False)` keeps it.
+  `ObservabilityConfig(suppress_server_access_log=False)` keeps it. The logger
+  is process-wide; the last `create_middleware()` call decides.
 - **uvicorn's own lines are JSON.** `configure_logging()` drops the plain-text
   handlers uvicorn puts on `uvicorn` and `uvicorn.error`, so its startup,
   shutdown and server-error lines render through the root formatter like any
