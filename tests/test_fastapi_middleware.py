@@ -189,39 +189,91 @@ def test_disabled_streamed_response_body_is_marked_in_the_log():
     assert logged["response_data"]["body"] == "[BODY_LOGGING_DISABLED]"
 
 
-@pytest.mark.asyncio
-async def test_disabled_request_body_reaches_the_app_as_the_server_sent_it():
-    """Unbuffered: the app reads each chunk from the server's own receive."""
-    chunks = [
-        {"type": "http.request", "body": b"first", "more_body": True},
-        {"type": "http.request", "body": b"second", "more_body": False},
-    ]
-    from_server = iter(chunks)
-    app_received = []
+UPLOAD_CHUNKS = [
+    {"type": "http.request", "body": b"first", "more_body": True},
+    {"type": "http.request", "body": b"second", "more_body": False},
+]
+SECONDS_PER_CHUNK = 0.25
 
-    async def receive():
-        return next(from_server, {"type": "http.disconnect"})
 
-    async def send(message):
-        pass
-
-    async def app(scope, receive, send):
-        app_received.extend([await receive(), await receive()])
-        await send({"type": "http.response.start", "status": 204, "headers": []})
-        await send({"type": "http.response.body", "body": b""})
-
-    scope = {
+def upload_scope():
+    return {
         "type": "http",
         "method": "POST",
         "path": "/upload",
         "headers": [],
         "query_string": b"",
     }
+
+
+async def ignore_sent(message):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_disabled_request_body_reaches_the_app_as_the_server_sent_it():
+    """Unbuffered: the app reads each chunk from the server's own receive."""
+    from_server = iter(UPLOAD_CHUNKS)
+    app_received = []
+
+    async def receive():
+        return next(from_server, {"type": "http.disconnect"})
+
+    async def app(scope, receive, send):
+        app_received.extend([await receive(), await receive()])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
     middleware = FastAPIMiddleware(app, bodies_off_config())
 
-    await middleware(scope, receive, send)
+    await middleware(upload_scope(), receive, ignore_sent)
 
-    assert app_received == chunks
+    assert app_received == UPLOAD_CHUNKS
+
+
+class FakeClock:
+    """Stands in for the ``time`` module: ``time()`` reads a clock the test advances."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("log_request_body", [True, False])
+async def test_duration_covers_receiving_the_request_body(log_request_body):
+    """Buffered by the middleware or read by the app, the body's arrival is timed."""
+    clock = FakeClock()
+    from_server = iter(UPLOAD_CHUNKS)
+
+    async def receive():
+        message = next(from_server, {"type": "http.disconnect"})
+        clock.now += SECONDS_PER_CHUNK
+        return message
+
+    async def app(scope, receive, send):
+        while (await receive()).get("more_body"):
+            pass
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    config = ObservabilityConfig(
+        service_name="svc", log_request_body=log_request_body, log_response_body=False
+    )
+    logged = {}
+
+    with (
+        patch("auditry.fastapi.middleware.time", clock),
+        patch(
+            "auditry.fastapi.middleware.RequestResponseLogger.log_success",
+            side_effect=lambda **kwargs: logged.update(kwargs),
+        ),
+    ):
+        await FastAPIMiddleware(app, config)(upload_scope(), receive, ignore_sent)
+
+    assert logged["duration_ms"] == pytest.approx(len(UPLOAD_CHUNKS) * SECONDS_PER_CHUNK * 1000)
 
 
 def test_business_event_extracted_from_response_body():

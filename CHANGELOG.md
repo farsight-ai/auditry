@@ -4,9 +4,11 @@
 
 Output changes for Quart streamed responses: their lines lose `"body": null`,
 and their response headers now follow `log_response_headers` (off by default)
-and redaction. Other lines are unchanged, except that a request body sent
-without `Content-Length` or `Transfer-Encoding` (possible only over HTTP/2) is
-no longer marked `[BODY_LOGGING_DISABLED]`.
+and redaction. FastAPI's `execution_duration_ms` now includes the time the
+request body takes to arrive; check any latency query, dashboard or alarm that
+reads it. Other lines are unchanged, except that a request body sent without
+`Content-Length` or `Transfer-Encoding` (possible only over HTTP/2) is no
+longer marked `[BODY_LOGGING_DISABLED]`.
 
 ### Changed
 
@@ -22,6 +24,10 @@ no longer marked `[BODY_LOGGING_DISABLED]`.
 - A request's `[BODY_LOGGING_DISABLED]` marks a body its headers declare (a
   `Content-Length` above 0, or a `Transfer-Encoding`), not one that was read.
   Under HTTP/1.1 a request body always has one of the two.
+- **FastAPI: `execution_duration_ms` covers receiving the request body**, with
+  either `log_request_body` setting, as on Quart. The clock used to start after
+  the middleware had buffered the body, so the time a slow upload took did not
+  count.
 - Quart: a streamed response's line has no `body: null`.
 
 ### Fixed

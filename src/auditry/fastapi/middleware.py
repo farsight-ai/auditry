@@ -45,6 +45,10 @@ class FastAPIMiddleware:
         path = scope["path"]
         method = scope["method"]
 
+        # Started before the body is read, so the duration covers receiving it
+        # whether the middleware buffers it or the app reads it.
+        start_time = time.time()
+
         # With request body logging off the app reads the body straight from
         # the server: the middleware never sees it.
         raw_body = None
@@ -56,7 +60,6 @@ class FastAPIMiddleware:
 
         # Prepare logging context
         correlation_id = get_correlation_id()
-        start_time = time.time()
 
         # Extract request data for logging
         raw_request_data = {
