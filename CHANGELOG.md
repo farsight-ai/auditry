@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4 (2026-11-01)
 
 ### Fixed
 
@@ -15,6 +15,10 @@
   detection. A logged non-ASCII value is its Latin-1 text: the value the app
   set, for a Starlette response; one character per byte, for UTF-8 bytes an
   app writes into the ASGI message itself.
+- FastAPI: a `Content-Type` of `text/event-stream` spelled in any other case,
+  such as `TEXT/EVENT-STREAM`, was not detected as streaming, so with
+  `log_response_body=True` every chunk of the stream was held in memory until
+  it ended. Media types are now matched case-insensitively.
 
 ## 0.6.3 (2026-10-26)
 

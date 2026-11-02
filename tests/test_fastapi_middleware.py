@@ -359,10 +359,16 @@ async def test_latin1_response_headers_are_logged_as_latin1_text_and_redacted_by
 
 
 @pytest.mark.asyncio
-async def test_streaming_is_detected_with_response_headers_not_logged(handed_to_logger):
-    """Content-Type is still read when no other response header is."""
+@pytest.mark.parametrize(
+    "content_type",
+    [b"text/event-stream", b"TEXT/EVENT-STREAM", b"Text/Event-Stream; charset=utf-8"],
+)
+async def test_streaming_is_detected_with_response_headers_not_logged(
+    handed_to_logger, content_type
+):
+    """Content-Type is still read when no other response header is, in any case."""
     middleware = FastAPIMiddleware(
-        app_sending(latin1_header_response(content_type=b"text/event-stream")),
+        app_sending(latin1_header_response(content_type=content_type)),
         response_headers_config(False, log_response_body=True),
     )
 
@@ -371,6 +377,20 @@ async def test_streaming_is_detected_with_response_headers_not_logged(handed_to_
     (raw_data,) = handed_to_logger["response"]
     assert raw_data["headers"] is None
     assert raw_data["body"] is None
+
+
+@pytest.mark.asyncio
+async def test_response_headers_follow_the_setting_at_request_time(handed_to_logger):
+    config = response_headers_config(False)
+    middleware = FastAPIMiddleware(app_sending(latin1_header_response()), config)
+    await middleware(download_scope(), disconnected, ignore_sent)
+
+    config.log_response_headers = True
+    await middleware(download_scope(), disconnected, ignore_sent)
+
+    before, after = handed_to_logger["response"]
+    assert before["headers"] is None
+    assert after["headers"].keys() == {"content-type", "x-s3-prefix", "set-cookie"}
 
 
 def test_business_event_extracted_from_response_body():

@@ -23,6 +23,8 @@ from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
 # is one character, so any header bytes decode, and the text encodes back to them.
 HEADER_ENCODING = "latin-1"
 CONTENT_TYPE_HEADER = "content-type"
+# With response headers not logged, only the one streaming detection reads is decoded.
+STREAMING_DETECTION_HEADERS = frozenset({CONTENT_TYPE_HEADER})
 
 
 class FastAPIMiddleware:
@@ -34,10 +36,6 @@ class FastAPIMiddleware:
         self.logger = RequestResponseLogger(config)
         self.request_adapter = FastAPIRequestAdapter()
         self.response_adapter = FastAPIResponseAdapter()
-        # With response headers not logged, only the one streaming detection reads is decoded.
-        self.response_header_names = (
-            None if config.log_response_headers else frozenset({CONTENT_TYPE_HEADER})
-        )
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -84,6 +82,10 @@ class FastAPIMiddleware:
         }
         request_data = self.logger.prepare_request_data(raw_request_data, correlation_id)
 
+        # Read once, so the headers decoded and the headers logged follow the same setting.
+        log_response_headers = self.config.log_response_headers
+        response_header_names = None if log_response_headers else STREAMING_DETECTION_HEADERS
+
         # Capture response info
         response_info = {"status": None, "headers": {}}
         response_body_chunks: list[bytes] = []
@@ -96,12 +98,12 @@ class FastAPIMiddleware:
             if message["type"] == "http.response.start":
                 response_info["status"] = message["status"]
                 response_info["headers"] = _decode_headers(
-                    message.get("headers", []), self.response_header_names
+                    message.get("headers", []), response_header_names
                 )
 
-                # Detect streaming responses by content-type
+                # Detect streaming responses by content-type; media types are case-insensitive.
                 content_type = response_info["headers"].get(CONTENT_TYPE_HEADER, "")
-                if "text/event-stream" in content_type:
+                if "text/event-stream" in content_type.lower():
                     is_streaming = True
 
             elif message["type"] == "http.response.body" and not is_streaming:
@@ -126,7 +128,7 @@ class FastAPIMiddleware:
 
             raw_response_data = {
                 "status_code": response_info["status"],
-                "headers": response_info["headers"] if self.config.log_response_headers else None,
+                "headers": response_info["headers"] if log_response_headers else None,
                 "body": response_body,
                 "has_body": response_has_body,
             }
