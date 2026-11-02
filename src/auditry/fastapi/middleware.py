@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections.abc import Collection, Iterable
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
@@ -18,6 +19,11 @@ from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
 from ..tracing import require_otel, set_span_correlation_id
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
 
+# Starlette's header encoding, the one Request.headers decodes with. Each byte
+# is one character, so any header bytes decode, and the text encodes back to them.
+HEADER_ENCODING = "latin-1"
+CONTENT_TYPE_HEADER = "content-type"
+
 
 class FastAPIMiddleware:
     """ASGI middleware for request/response logging with streaming support."""
@@ -28,6 +34,10 @@ class FastAPIMiddleware:
         self.logger = RequestResponseLogger(config)
         self.request_adapter = FastAPIRequestAdapter()
         self.response_adapter = FastAPIResponseAdapter()
+        # With response headers not logged, only the one streaming detection reads is decoded.
+        self.response_header_names = (
+            None if config.log_response_headers else frozenset({CONTENT_TYPE_HEADER})
+        )
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -85,13 +95,12 @@ class FastAPIMiddleware:
 
             if message["type"] == "http.response.start":
                 response_info["status"] = message["status"]
-
-                # Capture headers
-                for name, value in message.get("headers", []):
-                    response_info["headers"][name.decode().lower()] = value.decode()
+                response_info["headers"] = _decode_headers(
+                    message.get("headers", []), self.response_header_names
+                )
 
                 # Detect streaming responses by content-type
-                content_type = response_info["headers"].get("content-type", "")
+                content_type = response_info["headers"].get(CONTENT_TYPE_HEADER, "")
                 if "text/event-stream" in content_type:
                     is_streaming = True
 
@@ -181,6 +190,19 @@ async def _buffer_request_body(receive: Receive) -> tuple[bytes, Receive]:
         return await receive()
 
     return raw_body, replay_body
+
+
+def _decode_headers(
+    raw_headers: Iterable[tuple[bytes, bytes]], names: Collection[str] | None = None
+) -> dict[str, str]:
+    """ASGI headers by lowercased name, all of them or only ``names``. A name
+    sent more than once keeps its last value."""
+    decoded = {}
+    for raw_name, raw_value in raw_headers:
+        name = raw_name.decode(HEADER_ENCODING).lower()
+        if names is None or name in names:
+            decoded[name] = raw_value.decode(HEADER_ENCODING)
+    return decoded
 
 
 class _DropRecords(logging.Filter):
