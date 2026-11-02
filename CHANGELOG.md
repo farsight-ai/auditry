@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.4 (2026-11-01)
+
+### Fixed
+
+- FastAPI: a response header whose value is not valid UTF-8 turned the
+  response into a 500, whatever `log_response_headers` said. Starlette encodes
+  header values as Latin-1, so a non-ASCII value such as `"données"`
+  reaches the middleware as `b"donn\xe9es"`; the middleware decoded it as UTF-8,
+  raised `UnicodeDecodeError`, and never passed the response start on to the
+  server. Response headers are now decoded as Latin-1, as Starlette decodes
+  request headers, which no header bytes can fail. With
+  `log_response_headers=False` only `Content-Type` is decoded, for streaming
+  detection. A logged non-ASCII value is its Latin-1 text: the value the app
+  set, for a Starlette response; one character per byte, for UTF-8 bytes an
+  app writes into the ASGI message itself.
+- FastAPI: a `Content-Type` of `text/event-stream` spelled in any other case,
+  such as `TEXT/EVENT-STREAM`, was not detected as streaming, so with
+  `log_response_body=True` every chunk of the stream was held in memory until
+  it ended. Media types are now matched case-insensitively.
+
 ## 0.6.3 (2026-10-26)
 
 Output changes for Quart streamed responses: their lines lose `"body": null`,

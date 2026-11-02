@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections.abc import Collection, Iterable
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
@@ -17,6 +18,13 @@ from ..propagation import _set_correlation_header
 from ..span_scrubbing import SpanScrubPolicy, set_span_scrub_policy
 from ..tracing import require_otel, set_span_correlation_id
 from .adapters import FastAPIRequestAdapter, FastAPIResponseAdapter
+
+# Starlette's header encoding, the one Request.headers decodes with. Each byte
+# is one character, so any header bytes decode, and the text encodes back to them.
+HEADER_ENCODING = "latin-1"
+CONTENT_TYPE_HEADER = "content-type"
+# With response headers not logged, only the one streaming detection reads is decoded.
+STREAMING_DETECTION_HEADERS = frozenset({CONTENT_TYPE_HEADER})
 
 
 class FastAPIMiddleware:
@@ -74,6 +82,10 @@ class FastAPIMiddleware:
         }
         request_data = self.logger.prepare_request_data(raw_request_data, correlation_id)
 
+        # Read once, so the headers decoded and the headers logged follow the same setting.
+        log_response_headers = self.config.log_response_headers
+        response_header_names = None if log_response_headers else STREAMING_DETECTION_HEADERS
+
         # Capture response info
         response_info = {"status": None, "headers": {}}
         response_body_chunks: list[bytes] = []
@@ -85,14 +97,13 @@ class FastAPIMiddleware:
 
             if message["type"] == "http.response.start":
                 response_info["status"] = message["status"]
+                response_info["headers"] = _decode_headers(
+                    message.get("headers", []), response_header_names
+                )
 
-                # Capture headers
-                for name, value in message.get("headers", []):
-                    response_info["headers"][name.decode().lower()] = value.decode()
-
-                # Detect streaming responses by content-type
-                content_type = response_info["headers"].get("content-type", "")
-                if "text/event-stream" in content_type:
+                # Detect streaming responses by content-type; media types are case-insensitive.
+                content_type = response_info["headers"].get(CONTENT_TYPE_HEADER, "")
+                if "text/event-stream" in content_type.lower():
                     is_streaming = True
 
             elif message["type"] == "http.response.body" and not is_streaming:
@@ -117,7 +128,7 @@ class FastAPIMiddleware:
 
             raw_response_data = {
                 "status_code": response_info["status"],
-                "headers": response_info["headers"] if self.config.log_response_headers else None,
+                "headers": response_info["headers"] if log_response_headers else None,
                 "body": response_body,
                 "has_body": response_has_body,
             }
@@ -181,6 +192,19 @@ async def _buffer_request_body(receive: Receive) -> tuple[bytes, Receive]:
         return await receive()
 
     return raw_body, replay_body
+
+
+def _decode_headers(
+    raw_headers: Iterable[tuple[bytes, bytes]], names: Collection[str] | None = None
+) -> dict[str, str]:
+    """ASGI headers by lowercased name, all of them or only ``names``. A name
+    sent more than once keeps its last value."""
+    decoded = {}
+    for raw_name, raw_value in raw_headers:
+        name = raw_name.decode(HEADER_ENCODING).lower()
+        if names is None or name in names:
+            decoded[name] = raw_value.decode(HEADER_ENCODING)
+    return decoded
 
 
 class _DropRecords(logging.Filter):

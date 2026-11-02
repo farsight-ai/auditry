@@ -276,6 +276,123 @@ async def test_duration_covers_receiving_the_request_body(log_request_body):
     assert logged["duration_ms"] == pytest.approx(len(UPLOAD_CHUNKS) * SECONDS_PER_CHUNK * 1000)
 
 
+# Not valid UTF-8 once encoded, as Starlette's Response encodes it: Latin-1.
+NON_ASCII_TEXT = "données"
+
+
+def latin1_header_response(content_type=b"text/plain"):
+    """A response's messages, with non-ASCII header values in Latin-1 bytes."""
+    return [
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", content_type),
+                (b"x-s3-prefix", NON_ASCII_TEXT.encode("latin-1")),
+                (b"set-cookie", f"session={NON_ASCII_TEXT}".encode("latin-1")),
+            ],
+        },
+        {"type": "http.response.body", "body": b"ok"},
+    ]
+
+
+def app_sending(messages):
+    async def app(scope, receive, send):
+        for message in messages:
+            await send(message)
+
+    return app
+
+
+def download_scope():
+    return {**upload_scope(), "method": "GET", "path": "/download"}
+
+
+async def disconnected():
+    return {"type": "http.disconnect"}
+
+
+def response_headers_config(log_response_headers, log_response_body=False):
+    return ObservabilityConfig(
+        service_name="svc",
+        log_request_body=False,
+        log_response_body=log_response_body,
+        log_response_headers=log_response_headers,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("log_response_headers", [False, True])
+async def test_latin1_response_headers_reach_the_server_unchanged(log_response_headers):
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = FastAPIMiddleware(
+        app_sending(latin1_header_response()), response_headers_config(log_response_headers)
+    )
+
+    await middleware(download_scope(), disconnected, send)
+
+    assert sent == latin1_header_response()
+
+
+@pytest.mark.asyncio
+async def test_latin1_response_headers_are_logged_as_latin1_text_and_redacted_by_name():
+    middleware = FastAPIMiddleware(
+        app_sending(latin1_header_response()), response_headers_config(True)
+    )
+    logged = {}
+
+    with patch(
+        "auditry.fastapi.middleware.RequestResponseLogger.log_success",
+        side_effect=lambda **kwargs: logged.update(kwargs),
+    ):
+        await middleware(download_scope(), disconnected, ignore_sent)
+
+    assert logged["response_data"]["headers"] == {
+        "content-type": "text/plain",
+        "x-s3-prefix": NON_ASCII_TEXT,
+        "set-cookie": "[REDACTED]",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_type",
+    [b"text/event-stream", b"TEXT/EVENT-STREAM", b"Text/Event-Stream; charset=utf-8"],
+)
+async def test_streaming_is_detected_with_response_headers_not_logged(
+    handed_to_logger, content_type
+):
+    """Content-Type is still read when no other response header is, in any case."""
+    middleware = FastAPIMiddleware(
+        app_sending(latin1_header_response(content_type=content_type)),
+        response_headers_config(False, log_response_body=True),
+    )
+
+    await middleware(download_scope(), disconnected, ignore_sent)
+
+    (raw_data,) = handed_to_logger["response"]
+    assert raw_data["headers"] is None
+    assert raw_data["body"] is None
+
+
+@pytest.mark.asyncio
+async def test_response_headers_follow_the_setting_at_request_time(handed_to_logger):
+    config = response_headers_config(False)
+    middleware = FastAPIMiddleware(app_sending(latin1_header_response()), config)
+    await middleware(download_scope(), disconnected, ignore_sent)
+
+    config.log_response_headers = True
+    await middleware(download_scope(), disconnected, ignore_sent)
+
+    before, after = handed_to_logger["response"]
+    assert before["headers"] is None
+    assert after["headers"].keys() == {"content-type", "x-s3-prefix", "set-cookie"}
+
+
 def test_business_event_extracted_from_response_body():
     """BusinessEventConfig.extract_from_response receives the buffered body."""
     app = FastAPI()
