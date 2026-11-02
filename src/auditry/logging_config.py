@@ -16,7 +16,8 @@ This module provides JSON-formatted logging with production-safe defaults:
   access-controlled log group), or enabled inline for local development
   with ``AUDITRY_FULL_TRACEBACKS=true``.
 - Foreign stdlib records (``logging.getLogger(...)`` in application or vendor
-  code) share the root schema but keep their tracebacks: auditry's error
+  code) share the root schema, add ``logger`` (the stdlib logger's name),
+  and keep their tracebacks: auditry's error
   discipline is scoped to auditry's records, not to every ``except`` block
   in the process.
 - The correlation ID is attached to every log line automatically (from the
@@ -362,8 +363,14 @@ def configure_logging(
     # discipline above is scoped to auditry's own records: stripping the
     # stack trace from every logger.exception() call in application and
     # vendor code is not auditry's call to make.
+    # They also carry ``logger``, the stdlib logger's name, so a line from
+    # application or vendor code says which module wrote it.
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=[*schema_processors, structlog.processors.format_exc_info],
+        foreign_pre_chain=[
+            *schema_processors,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.format_exc_info,
+        ],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             # Render as single-line JSON

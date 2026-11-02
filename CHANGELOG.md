@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.5 (2026-11-02)
+
+Output change for foreign stdlib records only: their lines gain one field.
+auditry's own records (middleware, `get_logger()`, metrics) are unchanged.
+
+### Added
+
+- A record from a plain stdlib logger (`logging.getLogger(...)` in
+  application or vendor code, uvicorn, boto3) carries `logger`, the logger's
+  name. Without it a line such as `"access denied"` did not say which module
+  wrote it.
+
 ## 0.6.4 (2026-11-01)
 
 ### Fixed
