@@ -45,7 +45,7 @@ from .propagation import (
     with_correlation,
 )
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 __all__ = [
     # Configuration

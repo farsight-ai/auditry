@@ -283,6 +283,11 @@ class TestForeignStdlibRecords:
         assert rec["level"] == "info"
         assert "timestamp" in rec
 
+    def test_foreign_record_names_its_logger(self, capsys):
+        configure_logging(service="test-svc")
+        logging.getLogger("myapp.infra.s3").warning("access denied")
+        assert last_line(capsys)["logger"] == "myapp.infra.s3"
+
     def test_foreign_exception_keeps_traceback(self, capsys):
         """Error discipline is scoped to auditry's own records. A stdlib
         logger.exception() in application or vendor code keeps its stack
