@@ -52,13 +52,20 @@ optionally `requires`: what a port must be able to represent to run it (see
 | --- | --- | --- |
 | `redact` | `data`, optional `additional_patterns` | the redacted copy of `data` |
 | `strict` | optional `explicit` (the `strict=` argument), `environment_variable` (`AUDITRY_STRICT`), `environment` | whether strict mode is on |
-| `log` | optional `configure` (`service`, `version`, `environment`), `environment_variables`, `level` (minimum, default `INFO`), `correlation_id`; `calls` | every line written, in order |
+| `log` | optional `configure` (`service`, `version`, `environment`, `additional_redaction_patterns`), `environment_variables`, `level` (minimum, default `INFO`), `correlation_id`; `calls` | every line written, in order |
 | `metric_line` | as `log`, plus `namespace` and `service` for a `MetricsLogger` writing through the configured pipeline; `calls` are metric calls | every line written |
 | `metrics` | `namespace`, `service`, optional `default_dimensions`, `strict` (default `false`); `calls` | `records`: raw EMF records; `warnings`: drop warnings; `raises`: the exception class name, when a call or the constructor raised |
 
 A `log` call is `level`, `message`, optional `fields`, and optional
 `error_type`: the call is made with an exception of a class by that name, whose
 message must not reach the line.
+
+Every `log` and `metric_line` line is redacted before it is written: by field
+name with `contract.json`'s patterns plus `additional_redaction_patterns`, and
+in the text of every string. The `log-redacts-fields`,
+`log-redacts-message-text`, `log-additional-redaction-patterns` and
+`metric-line-name-matching-a-redaction-pattern` cases pin what that removes;
+[Every line](../README.md#every-line) says which text forms are found.
 
 A metric call is an `op` and its arguments: `emit` (`metrics`, `unit`, `units`,
 `dimensions`, `rollup_dimension_sets`, `dimension_sets`), `count` (`name`,

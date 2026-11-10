@@ -20,6 +20,9 @@ This module provides JSON-formatted logging with production-safe defaults:
   and keep their tracebacks: auditry's error
   discipline is scoped to auditry's records, not to every ``except`` block
   in the process.
+- Every line, auditry's and foreign, is redacted just before it is rendered:
+  fields whose name matches a redaction pattern, and credentials written into
+  the message, other string fields, and exception text.
 - The correlation ID is attached to every log line automatically (from the
   ASGI middleware context or a worker binding — see ``auditry.propagation``).
   Inside an active OpenTelemetry span, so are ``trace_id`` and ``span_id``.
@@ -33,7 +36,7 @@ This module provides JSON-formatted logging with production-safe defaults:
 import logging
 import os
 import sys
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from types import TracebackType
 from typing import Any
 
@@ -41,7 +44,8 @@ import structlog
 from asgi_correlation_id import correlation_id
 
 from .correlation import CORRELATION_ID_FIELD
-from .tracing import current_trace_fields, drop_or_raise
+from .redaction import REDACTED_VALUE, SensitiveDataRedactor
+from .tracing import TRACE_LOG_FIELDS, current_trace_fields, drop_or_raise
 
 # ---------------------------------------------------------------------------
 # Service context — service/version/environment stamped on every log line, so
@@ -138,6 +142,9 @@ def set_trace_handler(handler: TraceHandler | None) -> None:
     """Receive ``(error_type, exc_info, event_dict)`` for every exception auditry
     keeps off the standard stream. The handler must route to a gated
     destination and never write back to stdout. ``None`` removes it.
+
+    ``event_dict`` is redacted as the line is; ``exc_info`` is the live
+    exception, and the text rendered from it is not.
     """
     global _trace_handler
     _trace_handler = handler
@@ -154,8 +161,107 @@ def _set_config_service(service_name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Line redaction: the default patterns plus those from configure_logging() and
+# from ObservabilityConfig (via create_middleware()). The two are kept apart so
+# they can be set in either order, as with the service name.
+# ---------------------------------------------------------------------------
+
+_logging_redaction_patterns: tuple[str, ...] = ()
+_config_redaction_patterns: tuple[str, ...] = ()
+_line_redactor = SensitiveDataRedactor()
+
+# The root schema and the fields auditry writes itself. Their values are
+# scanned like any other, but no pattern replaces them whole, so an additional
+# pattern such as "message" cannot blank every line.
+_SCHEMA_FIELDS = frozenset(
+    {
+        "timestamp",
+        "level",
+        "service",
+        "version",
+        "environment",
+        "message",
+        "logger",
+        "error_type",
+        "exception",
+        CORRELATION_ID_FIELD,
+        *TRACE_LOG_FIELDS,
+    }
+)
+
+# The CloudWatch EMF envelope of a metric record, which MetricsLogger builds
+# from validated names. It is written as is: an additional pattern such as
+# "name" would otherwise replace its "Name" and "Namespace" keys.
+_EMF_ENVELOPE = "_aws"
+
+
+def _set_logging_redaction_patterns(patterns: Iterable[str] | None) -> None:
+    global _logging_redaction_patterns
+    _logging_redaction_patterns = tuple(patterns or ())
+    _rebuild_line_redactor()
+
+
+def _set_config_redaction_patterns(patterns: Iterable[str] | None) -> None:
+    global _config_redaction_patterns
+    _config_redaction_patterns = tuple(patterns or ())
+    _rebuild_line_redactor()
+
+
+def _rebuild_line_redactor() -> None:
+    global _line_redactor
+    _line_redactor = SensitiveDataRedactor(
+        [*_logging_redaction_patterns, *_config_redaction_patterns]
+    )
+
+
+def _emf_metric_names(envelope: Any) -> frozenset[str]:
+    """The metric names an EMF envelope declares. Each is a key of the record
+    whose value CloudWatch reads as a number, so a pattern never replaces it:
+    a metric such as ``TokensUsed`` keeps its value."""
+    if not isinstance(envelope, Mapping):
+        return frozenset()
+    directives = envelope.get("CloudWatchMetrics")
+    if not isinstance(directives, list):
+        return frozenset()
+    return frozenset(
+        metric["Name"]
+        for directive in directives
+        if isinstance(directive, Mapping) and isinstance(directive.get("Metrics"), list)
+        for metric in directive["Metrics"]
+        if isinstance(metric, Mapping) and isinstance(metric.get("Name"), str)
+    )
+
+
+def _redact_event(event_dict: Mapping[str, Any]) -> dict[str, Any]:
+    """A redacted copy of a line's fields: a field whose name matches a
+    pattern becomes ``[REDACTED]``, at any depth, and every string passes
+    through ``SensitiveDataRedactor.redact_text``."""
+    redactor = _line_redactor
+    metric_names = _emf_metric_names(event_dict.get(_EMF_ENVELOPE))
+    redacted: dict[str, Any] = {}
+    for name, value in event_dict.items():
+        if name == _EMF_ENVELOPE:
+            redacted[name] = value
+        elif (
+            name in _SCHEMA_FIELDS or name in metric_names or not redactor.should_redact(str(name))
+        ):
+            redacted[name] = redactor.redact_all(value)
+        else:
+            redacted[name] = REDACTED_VALUE
+    return redacted
+
+
+# ---------------------------------------------------------------------------
 # structlog processors
 # ---------------------------------------------------------------------------
+
+
+def _redact_line(
+    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Redaction of every line, auditry's and foreign, after the exception
+    processors so it sees the exception text too."""
+    return _redact_event(event_dict)
 
 
 def _add_service_context(
@@ -243,7 +349,7 @@ def _error_type_only(
     handler = _trace_handler
     if handler is not None:
         try:
-            handler(error_type, exc_info, dict(event_dict))
+            handler(error_type, exc_info, _redact_event(event_dict))
         except Exception:
             if _strict:
                 # Non-production: a broken trace handler is a bug to fix now.
@@ -282,6 +388,7 @@ def configure_logging(
     version: str | None = None,
     environment: str | None = None,
     strict: bool | None = None,
+    additional_redaction_patterns: list[str] | None = None,
 ) -> None:
     """
     Configure application-wide structured logging using structlog.
@@ -290,6 +397,10 @@ def configure_logging(
     schema and the correlation ID on every line. Should be called once at
     application startup — including worker processes (see
     ``auditry.propagation`` for binding correlation IDs outside ASGI).
+
+    Every line is redacted with the default patterns, ``additional_redaction_patterns``
+    and ``ObservabilityConfig.additional_redaction_patterns`` (once
+    ``create_middleware()`` has run).
 
     Also resolves **strict mode** — whether instrumentation failures raise
     (non-production) or degrade to drop-and-warn (production). Resolution,
@@ -306,6 +417,8 @@ def configure_logging(
         environment: Deployment environment; falls back to ENVIRONMENT.
         strict: Force strict mode on or off. Leave unset to derive it from
             the environment (see above).
+        additional_redaction_patterns: Field name patterns redacted on every
+            line, beyond the defaults.
     """
     global _full_tracebacks, _strict
 
@@ -318,6 +431,7 @@ def configure_logging(
     _service_context.update({k: v for k, v in resolved.items() if v})
     _full_tracebacks = os.environ.get(_FULL_TRACEBACKS_ENV, "").lower() in ("1", "true", "yes")
     _strict = _resolve_strict(strict, resolved["environment"])
+    _set_logging_redaction_patterns(additional_redaction_patterns)
 
     # The schema processors are shared by structlog-originated events and
     # foreign stdlib records (uvicorn, boto3, any library calling
@@ -373,6 +487,8 @@ def configure_logging(
         ],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # Both kinds of record, after their exception processors
+            _redact_line,
             # Render as single-line JSON
             structlog.processors.JSONRenderer(),
         ],

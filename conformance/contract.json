@@ -52,6 +52,7 @@
       "signature",
       "credential",
       "x-auth",
+      "farsight-auth",
       "x-amz-security-token",
       "proxy-authorization",
       "csrf",

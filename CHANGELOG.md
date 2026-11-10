@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.6 (2026-11-10)
+
+Output change for every line `configure_logging()` writes: credentials in it
+are now `[REDACTED]`. Only values that matched a pattern or a credential shape
+change; field names, the root schema and metric values are unchanged.
+
+### Added
+
+- **Every line is redacted** ([DEV-3410](https://linear.app/farsight-ai/issue/DEV-3410/auditry-no-line-level-log-redaction)),
+  not just the request and response fields the middleware logs. That covers
+  `get_logger()` lines, plain stdlib loggers in application and vendor code,
+  and metric records. A field whose name matches a pattern is replaced at any
+  depth, and the message, every other string field and exception text (a
+  foreign record's traceback, `exception_message`, the `AUDITRY_FULL_TRACEBACKS`
+  traceback) lose the value after a matching `name=` or `name:`, the
+  credential after `Bearer`, and any JSON Web Token. README: "Every line".
+- `configure_logging(additional_redaction_patterns=...)`, for workers and other
+  processes without the middleware. `ObservabilityConfig.additional_redaction_patterns`
+  now applies to every line too, once `create_middleware()` has run.
+- `farsight-auth`, the gateway's credential header, is a default pattern. It
+  was not redacted: matching is by substring, and `x-auth` is not one of
+  `farsight-auth`.
+
+### Changed
+
+- The trace handler's `event_dict` is redacted as the line is. `exc_info` is
+  still the live exception.
+- In a metric record, a dimension whose name matches a pattern is written as
+  `[REDACTED]`, which CloudWatch then records as the dimension value. Metric
+  values and the `_aws` envelope are never redacted.
+- A request or response body that the middleware cannot parse as JSON (a form
+  body, a body truncated at `payload_size_limit`) is no longer logged
+  verbatim: its text is scanned like any other.
+
 ## 0.6.5 (2026-11-02)
 
 Output change for foreign stdlib records only: their lines gain one field.

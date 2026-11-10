@@ -658,6 +658,11 @@ fields, a metric or dimension may not be named after one: `_aws`, `event`,
 `environment`, `correlation_id`, `trace_id` or `span_id`. Such a record is
 dropped with a warning (`MetricRecordError` in strict mode).
 
+The record is [redacted](#every-line) like every line, except that metric values
+and the `_aws` envelope are written as they are: a metric named `TokensIssued`
+keeps its count. A dimension whose name matches a redaction pattern is written
+as `[REDACTED]`, and so becomes the dimension value CloudWatch records.
+
 ### Timing Dependency Calls
 
 `dependency_call()` times a call and records success or failure, with the
@@ -1024,15 +1029,15 @@ uvicorn.run(app, log_config=None)
 
 ### Automatic Redaction
 
-Automatically redacts these sensitive field patterns in all logged request
-bodies, response bodies, headers, **and query parameters**:
+A field whose name contains one of these patterns (case-insensitive) is logged
+as `[REDACTED]`:
 
 - `password` / `passwd`
 - `token` / `jwt` / `bearer`
 - `api_key` / `apikey` / `x-api-key`
 - `access_key` / `private_key`
 - `secret` / `credential`
-- `authorization` / `proxy-authorization` / `x-auth`
+- `authorization` / `proxy-authorization` / `x-auth` / `farsight-auth`
 - `cookie` / `set-cookie`
 - `otp` / `one_time_password`
 - `signature`
@@ -1041,14 +1046,65 @@ bodies, response bodies, headers, **and query parameters**:
 - `credit_card` / `creditcard`
 - `x-amz-security-token`
 
-Add custom patterns via configuration:
+Matching is by substring: `user_password` and `x-farsight-auth` match, and so
+does `tokenizer`.
+
+Add custom patterns via configuration. Patterns passed to either call apply to
+every line; those in `ObservabilityConfig` also apply to the middleware's
+request and response fields and to spans.
 
 ```python
+configure_logging(
+    service="my-service-name",
+    additional_redaction_patterns=["internal_token", "employee_id"],
+)
+
 config = ObservabilityConfig(
     service_name="my-service-name",
     additional_redaction_patterns=["internal_token", "employee_id"],
 )
 ```
+
+#### Every line
+
+`configure_logging()` redacts every line it writes, just before rendering: the
+middleware's request and response lines, `get_logger()` lines, plain stdlib
+loggers in your code and vendor SDKs, and metric records.
+
+- **Fields**: a field whose name matches a pattern, at any depth of a nested
+  `dict` or `list`.
+- **Text**: the message, every other string field, and exception text (a
+  foreign record's traceback, `exception_message`, the
+  `AUDITRY_FULL_TRACEBACKS` traceback). A value that JSON cannot encode is
+  scanned as the text it is written as (its `repr()`). Text loses:
+  - the value after a matching name followed by `:` or `=`, as JSON, a Python
+    `repr()`, a query string, logfmt or a header line writes it:
+    `token=abc`, `"password": "x"`, `{'api_key': 'k'}`,
+    `Authorization: Bearer abc`. A quoted value keeps its quotes; a value in
+    brackets (`{...}`, `[...]`, `(...)`) is redacted whole;
+  - the credential after `Bearer`;
+  - any JSON Web Token (`eyJ...`).
+
+| Logged | Written |
+| --- | --- |
+| `logger.info("retry", password="x")` | `"password": "[REDACTED]"` |
+| `logger.info(f"GET {url}")` with `?token=abc&page=2` | `"message": "GET /x?token=[REDACTED]&page=2"` |
+| `logging.getLogger("sdk").info("headers %s", {"farsight-auth": "t"})` | `"message": "headers {'farsight-auth': '[REDACTED]'}"` |
+| `logging.getLogger("app").exception("failed")` for `ValueError(f"bad Authorization: Bearer {t}")` | `"exception": "Traceback ... ValueError: bad Authorization: [REDACTED]"` |
+
+Limits:
+
+- A credential written as prose (`"the password is x"`) is not found. Nor is
+  customer content, which has no names to match: keep bodies off and exception
+  messages off (see below).
+- The root schema fields (`message`, `service`, `level`, `correlation_id`, …)
+  are never replaced whole, whatever the patterns; their text is still
+  scanned.
+- In a metric record, metric values are never replaced, so CloudWatch still
+  extracts them; a dimension whose name matches is (see
+  [Metrics Ride the Log Pipeline](#metrics-ride-the-log-pipeline)).
+- Code that looks like an assignment is redacted too: a traceback's source
+  line `token = get_token(request)` is written as `token = [REDACTED]`.
 
 ### Disabling Body Logging (Application-Wide)
 
@@ -1093,8 +1149,8 @@ flag implicit raises a `DeprecationWarning`.
 Error logs are the single most likely place for customer content to leak.
 Exception messages routinely interpolate exactly the input that caused the
 failure — a parse error quotes the document, a validation error quotes the field
-value, an SDK error quotes the payload. Redaction cannot help, because a
-traceback has no field names to match.
+value, an SDK error quotes the payload. Redaction cannot help: it finds
+credentials written as `name=value`, not the content a message quotes.
 
 A failed request logs the exception **class** and the
 correlation ID, and nothing else:
@@ -1150,8 +1206,9 @@ remove the handler.
 
 The handler receives `(error_type, exc_info, event_dict)`: the exception class
 name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
-fields under the root schema (`message`, `correlation_id`, `service`, …). Render
-the tuple to text yourself if you need text. If the handler raises, auditry
+fields under the root schema (`message`, `correlation_id`, `service`, …),
+redacted as the line is. Render the tuple to text yourself if you need text; that
+text is not redacted. If the handler raises, auditry
 swallows it and marks the line `trace_handler_error: true` rather than letting
 your logging path break the request — in production. In
 [strict mode](#strict-mode-loud-in-non-production) it re-raises, so a broken

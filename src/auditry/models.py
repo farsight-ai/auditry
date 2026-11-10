@@ -117,7 +117,11 @@ class ObservabilityConfig(BaseModel):
     )
     additional_redaction_patterns: list[str] | None = Field(
         default=None,
-        description="Additional field name patterns to redact beyond defaults",
+        description=(
+            "Additional field name patterns to redact beyond defaults: in the "
+            "middleware's fields, in spans, and on every log line once "
+            "create_middleware() has run"
+        ),
     )
     log_request_headers: bool = Field(
         default=True, description="Whether to log request headers (redacted)"

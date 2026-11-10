@@ -11,7 +11,12 @@ from starlette.types import Message, Receive
 from ..core.base import declares_body
 from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _SERVER_ACCESS_LOGGER, _drop_own_handlers, _set_config_service
+from ..logging_config import (
+    _SERVER_ACCESS_LOGGER,
+    _drop_own_handlers,
+    _set_config_redaction_patterns,
+    _set_config_service,
+)
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_scope
 from ..propagation import _set_correlation_header
@@ -279,6 +284,7 @@ def create_middleware(app, config: ObservabilityConfig):
     server span per request (requires the ``otel`` extra).
     """
     _set_config_service(config.service_name)
+    _set_config_redaction_patterns(config.additional_redaction_patterns)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
     if config.suppress_server_access_log:
