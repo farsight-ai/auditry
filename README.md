@@ -179,6 +179,9 @@ config = ObservabilityConfig(
     # Additional sensitive field patterns to redact
     additional_redaction_patterns=["internal_id", "employee_ssn"],
 
+    # Field names kept even though they match a pattern (see Sensitive Data Handling)
+    redaction_allowlist=["approx_tokens"],
+
     # Whether to log request headers (default: True)
     log_request_headers=True,
 
@@ -187,6 +190,11 @@ config = ObservabilityConfig(
 
     # Whether to log query parameters (default: True)
     log_query_params=True,
+
+    # Log the template of the route that matched ("/builds/{build_id}") as the
+    # path, without path parameters (default: False). See Logging Route
+    # Templates Instead of Paths.
+    log_route_template=False,
 
     # Whether to log request bodies. Bodies are user-supplied content that
     # field-name redaction cannot reliably scrub; set False unless you know
@@ -491,12 +499,12 @@ header.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `instrument_server` | `False` | Start a server span per request (see above). Leave off when the service instruments itself. |
-| `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern. |
+| `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern and is not on the [redaction allow-list](#automatic-redaction). |
 | `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string (including PostgreSQL dollar-quoted) and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
 | `keep_client_address` | `False` | Keep the client IP address and port on server spans. |
 
-`additional_redaction_patterns` applies to spans too: to query parameter names
-and captured header names.
+`additional_redaction_patterns` and `redaction_allowlist` apply to spans too:
+to query parameter names and captured header names.
 
 ### correlation_id vs trace_id
 
@@ -657,6 +665,13 @@ fields, a metric or dimension may not be named after one: `_aws`, `event`,
 `exc_info`, `message`, `level`, `timestamp`, `service`, `version`,
 `environment`, `correlation_id`, `trace_id` or `span_id`. Such a record is
 dropped with a warning (`MetricRecordError` in strict mode).
+
+The record is [redacted](#every-line) like every line, except that metric values
+and the `_aws` envelope are written as they are: a metric named `TokensIssued`
+keeps its count. A dimension whose name matches a redaction pattern, and is not
+on the [allow-list](#automatic-redaction), is written as `[REDACTED]`, and so
+becomes the dimension value CloudWatch records: `TokenScope` is, `TokenType` is
+not.
 
 ### Timing Dependency Calls
 
@@ -1024,15 +1039,15 @@ uvicorn.run(app, log_config=None)
 
 ### Automatic Redaction
 
-Automatically redacts these sensitive field patterns in all logged request
-bodies, response bodies, headers, **and query parameters**:
+A field whose name contains one of these patterns (case-insensitive) is logged
+as `[REDACTED]`:
 
 - `password` / `passwd`
 - `token` / `jwt` / `bearer`
 - `api_key` / `apikey` / `x-api-key`
 - `access_key` / `private_key`
 - `secret` / `credential`
-- `authorization` / `proxy-authorization` / `x-auth`
+- `authorization` / `proxy-authorization` / `x-auth` / `farsight-auth`
 - `cookie` / `set-cookie`
 - `otp` / `one_time_password`
 - `signature`
@@ -1041,14 +1056,85 @@ bodies, response bodies, headers, **and query parameters**:
 - `credit_card` / `creditcard`
 - `x-amz-security-token`
 
-Add custom patterns via configuration:
+Matching is by substring: `user_password` and `x-farsight-auth` match, and so
+does `tokenizer`.
+
+Names on the allow-list match a pattern but are kept:
+
+- LLM usage counts and limits, as the OpenAI, Anthropic and Gemini SDKs name
+  them: `prompt_tokens`, `completion_tokens`, `input_tokens`, `output_tokens`,
+  `cache_read_input_tokens`, `prompt_token_count`, `token_count`, `max_tokens`,
+  and the rest of `DEFAULT_REDACTION_ALLOWLIST` in `auditry.redaction`;
+- OAuth's `token_type` (`Bearer`) and `token_type_hint` (`refresh_token`).
+
+An entry matches a whole name, ignoring case, `_` and `-`: `prompt_tokens`
+keeps `PromptTokens` and `prompt-tokens`, but not `prompt_tokens_secret`. A kept
+field is never replaced whole; its value is still scanned as text, so
+`"token_type": "Bearer abc"` is written as `"token_type": "Bearer [REDACTED]"`.
+
+Add custom patterns and allow-list entries via configuration. Those passed to
+either call apply to every line; those in `ObservabilityConfig` also apply to
+the middleware's request and response fields and to spans.
+
+- An allow-list entry wins over every pattern, the service's own included.
+- A pattern that names a default allow-list entry, compared the same way, takes
+  it off the list: `additional_redaction_patterns=["total_tokens"]` redacts
+  `total_tokens` again. A pattern that only contains one (`"prompt"`) does not.
 
 ```python
+configure_logging(
+    service="my-service-name",
+    additional_redaction_patterns=["internal_token", "employee_id"],
+    redaction_allowlist=["approx_tokens"],
+)
+
 config = ObservabilityConfig(
     service_name="my-service-name",
     additional_redaction_patterns=["internal_token", "employee_id"],
+    redaction_allowlist=["approx_tokens"],
 )
 ```
+
+#### Every line
+
+`configure_logging()` redacts every line it writes, just before rendering: the
+middleware's request and response lines, `get_logger()` lines, plain stdlib
+loggers in your code and vendor SDKs, and metric records.
+
+- **Fields**: a field whose name matches a pattern, at any depth of a nested
+  `dict` or `list`.
+- **Text**: the message, every other string field, and exception text (a
+  foreign record's traceback, `exception_message`, the
+  `AUDITRY_FULL_TRACEBACKS` traceback). A value that JSON cannot encode is
+  scanned as the text it is written as (its `repr()`). Text loses:
+  - the value after a matching name followed by `:` or `=`, as JSON, a Python
+    `repr()`, a query string, logfmt or a header line writes it:
+    `token=abc`, `"password": "x"`, `{'api_key': 'k'}`,
+    `Authorization: Bearer abc`. A quoted value keeps its quotes; a value in
+    brackets (`{...}`, `[...]`, `(...)`) is redacted whole;
+  - the credential after `Bearer`;
+  - any JSON Web Token (`eyJ...`).
+
+| Logged | Written |
+| --- | --- |
+| `logger.info("retry", password="x")` | `"password": "[REDACTED]"` |
+| `logger.info(f"GET {url}")` with `?token=abc&page=2` | `"message": "GET /x?token=[REDACTED]&page=2"` |
+| `logging.getLogger("sdk").info("headers %s", {"farsight-auth": "t"})` | `"message": "headers {'farsight-auth': '[REDACTED]'}"` |
+| `logging.getLogger("app").exception("failed")` for `ValueError(f"bad Authorization: Bearer {t}")` | `"exception": "Traceback ... ValueError: bad Authorization: [REDACTED]"` |
+
+Limits:
+
+- A credential written as prose (`"the password is x"`) is not found. Nor is
+  customer content, which has no names to match: keep bodies off and exception
+  messages off (see below).
+- The root schema fields (`message`, `service`, `level`, `correlation_id`, …)
+  are never replaced whole, whatever the patterns and the allow-list; their
+  text is still scanned.
+- In a metric record, metric values are never replaced, so CloudWatch still
+  extracts them; a dimension whose name matches is (see
+  [Metrics Ride the Log Pipeline](#metrics-ride-the-log-pipeline)).
+- Code that looks like an assignment is redacted too: a traceback's source
+  line `token = get_token(request)` is written as `token = [REDACTED]`.
 
 ### Disabling Body Logging (Application-Wide)
 
@@ -1093,8 +1179,8 @@ flag implicit raises a `DeprecationWarning`.
 Error logs are the single most likely place for customer content to leak.
 Exception messages routinely interpolate exactly the input that caused the
 failure — a parse error quotes the document, a validation error quotes the field
-value, an SDK error quotes the payload. Redaction cannot help, because a
-traceback has no field names to match.
+value, an SDK error quotes the payload. Redaction cannot help: it finds
+credentials written as `name=value`, not the content a message quotes.
 
 A failed request logs the exception **class** and the
 correlation ID, and nothing else:
@@ -1150,8 +1236,9 @@ remove the handler.
 
 The handler receives `(error_type, exc_info, event_dict)`: the exception class
 name, the live `(type, value, traceback)` tuple, and a snapshot of the line's
-fields under the root schema (`message`, `correlation_id`, `service`, …). Render
-the tuple to text yourself if you need text. If the handler raises, auditry
+fields under the root schema (`message`, `correlation_id`, `service`, …),
+redacted as the line is. Render the tuple to text yourself if you need text; that
+text is not redacted. If the handler raises, auditry
 swallows it and marks the line `trace_handler_error: true` rather than letting
 your logging path break the request — in production. In
 [strict mode](#strict-mode-loud-in-non-production) it re-raises, so a broken
@@ -1177,6 +1264,26 @@ config = ObservabilityConfig(
 #    stays a real, tool-parseable traceback). Read once at configure_logging().
 #    AUDITRY_FULL_TRACEBACKS=true
 ```
+
+### Logging Route Templates Instead of Paths
+
+A request line names the concrete path by default. A path can carry what a
+customer named something (`/builds/acme-q3-deal_1a2b`), which no redaction
+pattern can tell from a route segment. With `log_route_template=True`, the line
+names the route that matched instead, in `request.path` and the message, and
+leaves `path_params` out:
+
+| Framework | Concrete path | Logged `path` |
+| --- | --- | --- |
+| FastAPI | `/builds/acme-q3-deal_1a2b/files` | `/builds/{build_id}/files` |
+| Quart | `/builds/acme-q3-deal_1a2b/files` | `/builds/<build_id>/files` |
+
+- A route under a FastAPI mount carries the mount's prefix.
+- A request no route template matched logs `[UNKNOWN_ROUTE]`: a 404, a plain
+  Starlette route, or a mounted app that is not FastAPI.
+- `excluded_paths` still match the concrete path.
+- Business events match the template, and `extract_from_path` finds no path
+  parameters.
 
 ### Excluding Paths
 

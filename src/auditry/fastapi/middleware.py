@@ -6,12 +6,17 @@ from collections.abc import Collection, Iterable
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import Request
-from starlette.types import Message, Receive
+from starlette.types import Message, Receive, Scope
 
 from ..core.base import declares_body
 from ..core.logger import RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _SERVER_ACCESS_LOGGER, _drop_own_handlers, _set_config_service
+from ..logging_config import (
+    _SERVER_ACCESS_LOGGER,
+    _drop_own_handlers,
+    _set_config_redaction,
+    _set_config_service,
+)
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_scope
 from ..propagation import _set_correlation_header
@@ -52,6 +57,8 @@ class FastAPIMiddleware:
             return
         path = scope["path"]
         method = scope["method"]
+        # Routing extends the scope's root_path by any mount the route is under.
+        root_path = scope.get("root_path", "")
 
         # Started before the body is read, so the duration covers receiving it
         # whether the middleware buffers it or the app reads it.
@@ -119,6 +126,7 @@ class FastAPIMiddleware:
         try:
             # Process the request
             await self.app(scope, app_receive, capture_response)
+            request_data = self.logger.name_route(request_data, _matched_route(scope, root_path))
 
             # Log success
             duration_ms = (time.time() - start_time) * 1000
@@ -143,6 +151,7 @@ class FastAPIMiddleware:
             )
 
         except Exception as error:
+            request_data = self.logger.name_route(request_data, _matched_route(scope, root_path))
             # Log error
             duration_ms = (time.time() - start_time) * 1000
             user_id = await self.request_adapter.extract_user_id(request)
@@ -159,6 +168,20 @@ class FastAPIMiddleware:
         finally:
             # Clean up
             self.request_adapter.clear_cache(request)
+
+
+def _matched_route(scope: Scope, root_path: str) -> str | None:
+    """The template of the FastAPI route the request matched, as a path inside
+    the app (``/builds/{build_id}``, under any mount it is in); None when no
+    FastAPI route matched. Known only once the app has run: FastAPI's router
+    writes the route into the scope (``scope["route"]``) as it matches, and a
+    mount appends its prefix to ``root_path``. ``root_path`` is the scope's
+    before the app ran."""
+    path_format = getattr(scope.get("route"), "path_format", None)
+    if not isinstance(path_format, str):
+        return None
+    routed_root_path: str = scope.get("root_path", "")
+    return routed_root_path[len(root_path) :] + path_format
 
 
 async def _buffer_request_body(receive: Receive) -> tuple[bytes, Receive]:
@@ -279,6 +302,7 @@ def create_middleware(app, config: ObservabilityConfig):
     server span per request (requires the ``otel`` extra).
     """
     _set_config_service(config.service_name)
+    _set_config_redaction(config.additional_redaction_patterns, config.redaction_allowlist)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
     if config.suppress_server_access_log:

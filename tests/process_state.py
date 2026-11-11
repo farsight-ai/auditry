@@ -3,7 +3,13 @@ import logging
 import structlog
 from asgi_correlation_id import correlation_id
 
-from auditry.logging_config import _set_config_service, _set_strict, set_trace_handler
+from auditry.logging_config import (
+    _set_config_redaction,
+    _set_config_service,
+    _set_logging_redaction,
+    _set_strict,
+    set_trace_handler,
+)
 from auditry.propagation import _set_correlation_header
 from auditry.tracing import _reset_warnings
 
@@ -14,6 +20,8 @@ def reset_process_state() -> None:
     structlog.contextvars.clear_contextvars()
     set_trace_handler(None)
     _set_config_service(None)
+    _set_config_redaction(None, None)
+    _set_logging_redaction(None, None)
     _set_correlation_header(None)
     _set_strict(False)
     _reset_warnings()

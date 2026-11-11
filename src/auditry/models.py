@@ -117,7 +117,19 @@ class ObservabilityConfig(BaseModel):
     )
     additional_redaction_patterns: list[str] | None = Field(
         default=None,
-        description="Additional field name patterns to redact beyond defaults",
+        description=(
+            "Additional field name patterns to redact beyond defaults: in the "
+            "middleware's fields, in spans, and on every log line once "
+            "create_middleware() has run"
+        ),
+    )
+    redaction_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Field names never replaced whole, beyond the built-in allow-list, "
+            "wherever additional_redaction_patterns apply. A name matches when "
+            "it equals an entry, ignoring case, '_' and '-'"
+        ),
     )
     log_request_headers: bool = Field(
         default=True, description="Whether to log request headers (redacted)"
@@ -152,6 +164,18 @@ class ObservabilityConfig(BaseModel):
             "exception messages frequently interpolate user content. The error "
             "TYPE and correlation ID are always logged; full tracebacks route "
             "via auditry.set_trace_handler to a gated destination."
+        ),
+    )
+    log_route_template: bool = Field(
+        default=False,
+        description=(
+            "Log the template of the route that matched (FastAPI "
+            "'/builds/{build_id}', Quart '/builds/<build_id>') as the request's "
+            "path, and leave path_params out: a concrete path can name customer "
+            "content that redaction cannot tell from a route segment. A request "
+            "no route template matched (a 404, a plain Starlette route, a mounted "
+            "app that is not FastAPI) logs '[UNKNOWN_ROUTE]'. excluded_paths still "
+            "match the concrete path."
         ),
     )
     include_default_excluded_paths: bool = Field(

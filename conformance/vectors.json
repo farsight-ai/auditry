@@ -90,6 +90,84 @@
       }
     },
     {
+      "name": "redact-allowlist-defaults",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 30,
+            "completion_tokens_details": {
+              "reasoning_tokens": 8
+            }
+          },
+          "PromptTokens": 12,
+          "max-tokens": 1000,
+          "token_type": "Bearer",
+          "access_token": "a-1",
+          "prompt_tokens_secret": "s-1"
+        }
+      },
+      "expected": {
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 30,
+          "completion_tokens_details": {
+            "reasoning_tokens": 8
+          }
+        },
+        "PromptTokens": 12,
+        "max-tokens": 1000,
+        "token_type": "Bearer",
+        "access_token": "[REDACTED]",
+        "prompt_tokens_secret": "[REDACTED]"
+      }
+    },
+    {
+      "name": "redact-allowlist-additional",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "approx_tokens": 5,
+          "secret_id": "db-creds",
+          "token": "t-1"
+        },
+        "allowlist": [
+          "approx_tokens",
+          "Secret-ID"
+        ]
+      },
+      "expected": {
+        "approx_tokens": 5,
+        "secret_id": "db-creds",
+        "token": "[REDACTED]"
+      }
+    },
+    {
+      "name": "redact-allowlist-retracted-by-a-pattern",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "prompt_tokens": 12,
+          "total_tokens": 42,
+          "approx_tokens": 5
+        },
+        "additional_patterns": [
+          "PROMPT_TOKENS",
+          "approx_tokens",
+          "prompt"
+        ],
+        "allowlist": [
+          "approx_tokens"
+        ]
+      },
+      "expected": {
+        "prompt_tokens": "[REDACTED]",
+        "total_tokens": 42,
+        "approx_tokens": 5
+      }
+    },
+    {
       "name": "redact-list-root",
       "kind": "redact",
       "input": {
@@ -118,6 +196,22 @@
         "data": "a password in a string is not a key"
       },
       "expected": "a password in a string is not a key"
+    },
+    {
+      "name": "redact-gateway-credential-header",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "farsight-auth": "t-1",
+          "X-Farsight-Auth": "t-2",
+          "author": "a"
+        }
+      },
+      "expected": {
+        "farsight-auth": "[REDACTED]",
+        "X-Farsight-Auth": "[REDACTED]",
+        "author": "a"
+      }
     },
     {
       "name": "strict-unset",
@@ -551,6 +645,254 @@
       ]
     },
     {
+      "name": "log-redacts-fields",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "upstream_call",
+            "fields": {
+              "password": "hunter2",
+              "otp": 123456,
+              "upstream": {
+                "headers": {
+                  "farsight-auth": "t-1",
+                  "accept": "application/json"
+                },
+                "attempts": [
+                  {
+                    "api_key": "k-1",
+                    "status": 401
+                  }
+                ]
+              },
+              "note": "retried with token=abc"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "password": "[REDACTED]",
+          "otp": "[REDACTED]",
+          "upstream": {
+            "headers": {
+              "farsight-auth": "[REDACTED]",
+              "accept": "application/json"
+            },
+            "attempts": [
+              {
+                "api_key": "[REDACTED]",
+                "status": 401
+              }
+            ]
+          },
+          "note": "retried with token=[REDACTED]",
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "upstream_call"
+        }
+      ]
+    },
+    {
+      "name": "log-redacts-message-text",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "login failed for user=bob password=hunter2&next=/home"
+          },
+          {
+            "level": "info",
+            "message": "upstream said {\"access_token\": \"abc\", \"expires_in\": 3600}"
+          },
+          {
+            "level": "info",
+            "message": "settings {'api_key': 'k-1', 'region': 'us-east-1'}"
+          },
+          {
+            "level": "info",
+            "message": "otp: 123456, retries: 2"
+          },
+          {
+            "level": "info",
+            "message": "Authorization: Bearer abc.def-ghi"
+          },
+          {
+            "level": "info",
+            "message": "forwarded Bearer opaque-123 upstream"
+          },
+          {
+            "level": "info",
+            "message": "decoded eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln for sub 1"
+          },
+          {
+            "level": "info",
+            "message": "credentials={'user': 'u', 'key': 'k'} loaded"
+          },
+          {
+            "level": "info",
+            "message": "payload {\"body\": \"{\\\"token\\\": \\\"abc\\\"}\"}"
+          },
+          {
+            "level": "info",
+            "message": "token rejected; password reset sent"
+          },
+          {
+            "level": "info",
+            "message": "token == expected"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "login failed for user=bob password=[REDACTED]&next=/home"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "upstream said {\"access_token\": \"[REDACTED]\", \"expires_in\": 3600}"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "settings {'api_key': '[REDACTED]', 'region': 'us-east-1'}"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "otp: [REDACTED], retries: 2"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "Authorization: [REDACTED]"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "forwarded Bearer [REDACTED] upstream"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "decoded [REDACTED] for sub 1"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "credentials=[REDACTED] loaded"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "payload {\"body\": \"{\\\"token\\\": \\\"[REDACTED]\\\"}\"}"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "token rejected; password reset sent"
+        },
+        {
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "token == expected"
+        }
+      ]
+    },
+    {
+      "name": "log-additional-redaction-patterns",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "additional_redaction_patterns": [
+            "TENANT_SECRET",
+            "message"
+          ]
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "tenant_secret=s-1 rotated",
+            "fields": {
+              "tenant_secret": "s-2",
+              "chat_message": "hi"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "tenant_secret": "[REDACTED]",
+          "chat_message": "[REDACTED]",
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "tenant_secret=[REDACTED] rotated"
+        }
+      ]
+    },
+    {
+      "name": "log-redaction-allowlist",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "redaction_allowlist": [
+            "approx_tokens",
+            "is_token_limit_error"
+          ]
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "input limit: approx_tokens=150000 token_count=7 access_token=abc",
+            "fields": {
+              "input_tokens": 5,
+              "is_token_limit_error": true,
+              "token_type": "Bearer abc.def",
+              "refresh_token": "r-1"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "input_tokens": 5,
+          "is_token_limit_error": true,
+          "token_type": "Bearer [REDACTED]",
+          "refresh_token": "[REDACTED]",
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "input limit: approx_tokens=150000 token_count=7 access_token=[REDACTED]"
+        }
+      ]
+    },
+    {
       "name": "metric-line-carries-root-schema",
       "kind": "metric_line",
       "input": {
@@ -596,6 +938,110 @@
           "service": "conformance-svc",
           "environment": "dev",
           "correlation_id": "c-3",
+          "message": "metric"
+        }
+      ]
+    },
+    {
+      "name": "metric-line-name-matching-a-redaction-pattern",
+      "kind": "metric_line",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "TokensIssued",
+            "value": 3,
+            "dimensions": {
+              "TokenScope": "read"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "_aws": {
+            "Timestamp": "<epoch-ms>",
+            "CloudWatchMetrics": [
+              {
+                "Namespace": "Farsight/Conformance",
+                "Dimensions": [
+                  [
+                    "Service",
+                    "TokenScope"
+                  ]
+                ],
+                "Metrics": [
+                  {
+                    "Name": "TokensIssued",
+                    "Unit": "Count"
+                  }
+                ]
+              }
+            ]
+          },
+          "Service": "conformance-svc",
+          "TokenScope": "[REDACTED]",
+          "TokensIssued": 3,
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "metric"
+        }
+      ]
+    },
+    {
+      "name": "metric-line-dimension-on-the-redaction-allowlist",
+      "kind": "metric_line",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "TokensIssued",
+            "value": 3,
+            "dimensions": {
+              "TokenType": "refresh"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "_aws": {
+            "Timestamp": "<epoch-ms>",
+            "CloudWatchMetrics": [
+              {
+                "Namespace": "Farsight/Conformance",
+                "Dimensions": [
+                  [
+                    "Service",
+                    "TokenType"
+                  ]
+                ],
+                "Metrics": [
+                  {
+                    "Name": "TokensIssued",
+                    "Unit": "Count"
+                  }
+                ]
+              }
+            ]
+          },
+          "Service": "conformance-svc",
+          "TokenType": "refresh",
+          "TokensIssued": 3,
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
           "message": "metric"
         }
       ]

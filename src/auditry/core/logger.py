@@ -12,9 +12,11 @@ from typing import Any
 import structlog
 
 from ..models import BusinessEventConfig, ObservabilityConfig
-from ..redaction import redact_data, redact_headers
+from ..redaction import SensitiveDataRedactor, redact_headers
 
 BODY_LOGGING_DISABLED = "[BODY_LOGGING_DISABLED]"
+# The path logged under log_route_template for a request no route template matched.
+UNKNOWN_ROUTE = "[UNKNOWN_ROUTE]"
 
 
 def _has_body(raw_data: dict[str, Any]) -> bool:
@@ -45,7 +47,9 @@ class RequestResponseLogger:
         self.config = config
         self.service_name = config.service_name
         self.payload_size_limit = config.payload_size_limit
-        self.additional_redaction_patterns = config.additional_redaction_patterns or []
+        self.redactor = SensitiveDataRedactor(
+            config.additional_redaction_patterns, config.redaction_allowlist
+        )
         self.business_events = config.business_events or {}
         self.logger = structlog.get_logger(__name__)
 
@@ -81,9 +85,7 @@ class RequestResponseLogger:
 
         # Add query params if configured
         if self.config.log_query_params and raw_data.get("query_params"):
-            prepared["query_params"] = redact_data(
-                raw_data["query_params"], self.additional_redaction_patterns
-            )
+            prepared["query_params"] = self.redactor.redact(raw_data["query_params"])
 
         # Add path params (always included if present)
         if raw_data.get("path_params"):
@@ -96,6 +98,17 @@ class RequestResponseLogger:
             prepared["body"] = BODY_LOGGING_DISABLED
 
         return prepared
+
+    def name_route(self, request_data: dict[str, Any], route: str | None) -> dict[str, Any]:
+        """``request_data`` as it is logged. With ``log_route_template``, ``route``,
+        or ``UNKNOWN_ROUTE`` when no template matched, replaces the concrete
+        path, and the path parameters' values are left out. Unchanged
+        otherwise."""
+        if not self.config.log_route_template:
+            return request_data
+        named = {key: value for key, value in request_data.items() if key != "path_params"}
+        named["path"] = route or UNKNOWN_ROUTE
+        return named
 
     def prepare_response_data(self, raw_data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -250,7 +263,7 @@ class RequestResponseLogger:
         # Try to parse as JSON
         try:
             body_json = json.loads(body)
-            return redact_data(body_json, self.additional_redaction_patterns)
+            return self.redactor.redact(body_json)
         except (json.JSONDecodeError, UnicodeDecodeError):
             # Return as string if not JSON
             try:

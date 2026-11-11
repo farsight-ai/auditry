@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.6.6 (2026-11-10)
+
+Output change for every line `configure_logging()` writes: credentials in it
+are now `[REDACTED]`. Only values that matched a pattern or a credential shape
+change; field names, the root schema and metric values are unchanged.
+
+### Added
+
+- **Every line is redacted** ([DEV-3410](https://linear.app/farsight-ai/issue/DEV-3410/auditry-no-line-level-log-redaction)),
+  not just the request and response fields the middleware logs. That covers
+  `get_logger()` lines, plain stdlib loggers in application and vendor code,
+  and metric records. A field whose name matches a pattern is replaced at any
+  depth, and the message, every other string field and exception text (a
+  foreign record's traceback, `exception_message`, the `AUDITRY_FULL_TRACEBACKS`
+  traceback) lose the value after a matching `name=` or `name:`, the
+  credential after `Bearer`, and any JSON Web Token. README: "Every line".
+- `configure_logging(additional_redaction_patterns=...)`, for workers and other
+  processes without the middleware. `ObservabilityConfig.additional_redaction_patterns`
+  now applies to every line too, once `create_middleware()` has run.
+- **Redaction allow-list**: names that match a pattern but are kept, so lines
+  keep the counts services already log. `DEFAULT_REDACTION_ALLOWLIST` holds LLM
+  usage counts and limits as the OpenAI, Anthropic and Gemini SDKs name them
+  (`prompt_tokens`, `input_tokens`, `token_count`, `max_tokens`, ...) and
+  OAuth's `token_type` / `token_type_hint`; `configure_logging(redaction_allowlist=...)`
+  and `ObservabilityConfig.redaction_allowlist` add to it, wherever the matching
+  `additional_redaction_patterns` apply, and win over every pattern. An entry
+  matches a whole name, ignoring case, `_` and `-`; a kept value is still
+  scanned. A pattern that names a default entry takes it off the list. These
+  names are now also kept in the middleware's request and response fields and
+  in spans, where `prompt_tokens` and the rest were redacted before. README:
+  "Automatic Redaction".
+- `farsight-auth`, the gateway's credential header, is a default pattern. It
+  was not redacted: matching is by substring, and `x-auth` is not one of
+  `farsight-auth`.
+- `ObservabilityConfig.log_route_template`, off by default: the request line
+  names the route that matched (`/builds/{build_id}`) instead of the concrete
+  path, and leaves `path_params` out; `[UNKNOWN_ROUTE]` when no route template
+  matched. Off, lines are unchanged. README: "Logging Route Templates Instead
+  of Paths".
+
+### Changed
+
+- The trace handler's `event_dict` is redacted as the line is. `exc_info` is
+  still the live exception.
+- In a metric record, a dimension whose name matches a pattern, and is not on
+  the allow-list, is written as `[REDACTED]`, which CloudWatch then records as
+  the dimension value. Metric
+  values and the `_aws` envelope are never redacted.
+- A request or response body that the middleware cannot parse as JSON (a form
+  body, a body truncated at `payload_size_limit`) is no longer logged
+  verbatim: its text is scanned like any other.
+
 ## 0.6.5 (2026-11-02)
 
 Output change for foreign stdlib records only: their lines gain one field.

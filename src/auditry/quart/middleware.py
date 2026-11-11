@@ -18,7 +18,7 @@ from werkzeug.exceptions import HTTPException
 
 from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _set_config_service
+from ..logging_config import _set_config_redaction, _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
@@ -86,8 +86,12 @@ class QuartMiddleware(BaseMiddleware):
             )
             request.observability_raw_data = raw_request_data
 
-            request.observability_request_data = self.logger.prepare_request_data(
-                raw_request_data, request.observability_correlation_id
+            # Quart matches the route before before_request hooks run.
+            request.observability_request_data = self.logger.name_route(
+                self.logger.prepare_request_data(
+                    raw_request_data, request.observability_correlation_id
+                ),
+                request.url_rule.rule if request.url_rule is not None else None,
             )
 
         @self.app.after_request
@@ -271,6 +275,7 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         ```
     """
     _set_config_service(config.service_name)
+    _set_config_redaction(config.additional_redaction_patterns, config.redaction_allowlist)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
 

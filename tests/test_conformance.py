@@ -39,7 +39,12 @@ from auditry.metrics import (
     FORBIDDEN_DIMENSION_PATTERNS,
     MetricsLogger,
 )
-from auditry.redaction import DEFAULT_REDACTION_PATTERNS, REDACTED_VALUE, redact_data
+from auditry.redaction import (
+    DEFAULT_REDACTION_ALLOWLIST,
+    DEFAULT_REDACTION_PATTERNS,
+    REDACTED_VALUE,
+    redact_data,
+)
 from auditry.tracing import TRACE_LOG_FIELDS
 from tests.process_state import reset_process_state
 
@@ -83,6 +88,7 @@ def build_contract() -> dict[str, Any]:
         },
         "redaction": {
             "patterns": list(DEFAULT_REDACTION_PATTERNS),
+            "allowlist": list(DEFAULT_REDACTION_ALLOWLIST),
             "marker": REDACTED_VALUE,
         },
         "metrics": {
@@ -166,7 +172,7 @@ def _normalize_duration(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_redact(spec: dict[str, Any]) -> Any:
-    return redact_data(spec["data"], spec.get("additional_patterns"))
+    return redact_data(spec["data"], spec.get("additional_patterns"), spec.get("allowlist"))
 
 
 def run_strict(spec: dict[str, Any]) -> bool:
