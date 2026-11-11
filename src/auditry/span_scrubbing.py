@@ -166,6 +166,7 @@ class SpanScrubPolicy:
 
     query_param_allowlist: frozenset[str] = frozenset()
     redaction_patterns: tuple[str, ...] = ()
+    redaction_allowlist: tuple[str, ...] = ()
     db_statement: DbStatementMode = DEFAULT_DB_STATEMENT_MODE
     keep_client_address: bool = False
 
@@ -177,24 +178,27 @@ class SpanScrubPolicy:
 
     @classmethod
     def from_config(cls, config: "ObservabilityConfig") -> "SpanScrubPolicy":
-        """``config.tracing`` plus ``config.additional_redaction_patterns``."""
+        """``config.tracing`` plus ``config.additional_redaction_patterns`` and
+        ``config.redaction_allowlist``."""
         tracing = config.tracing
         return cls(
             query_param_allowlist=frozenset(tracing.query_param_allowlist),
             redaction_patterns=tuple(config.additional_redaction_patterns or ()),
+            redaction_allowlist=tuple(config.redaction_allowlist or ()),
             db_statement=tracing.db_statement,
             keep_client_address=tracing.keep_client_address,
         )
 
     @property
     def redactor(self) -> SensitiveDataRedactor:
-        """The default redaction patterns plus ``redaction_patterns``."""
-        return _redactor(self.redaction_patterns)
+        """The default redaction patterns plus ``redaction_patterns``, and the
+        default allow-list plus ``redaction_allowlist``."""
+        return _redactor(self.redaction_patterns, self.redaction_allowlist)
 
 
 @functools.lru_cache(maxsize=REDACTOR_CACHE_SIZE)
-def _redactor(patterns: tuple[str, ...]) -> SensitiveDataRedactor:
-    return SensitiveDataRedactor(list(patterns))
+def _redactor(patterns: tuple[str, ...], allowlist: tuple[str, ...]) -> SensitiveDataRedactor:
+    return SensitiveDataRedactor(list(patterns), list(allowlist))
 
 
 _DEFAULT_POLICY = SpanScrubPolicy()

@@ -179,6 +179,9 @@ config = ObservabilityConfig(
     # Additional sensitive field patterns to redact
     additional_redaction_patterns=["internal_id", "employee_ssn"],
 
+    # Field names kept even though they match a pattern (see Sensitive Data Handling)
+    redaction_allowlist=["approx_tokens"],
+
     # Whether to log request headers (default: True)
     log_request_headers=True,
 
@@ -496,12 +499,12 @@ header.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `instrument_server` | `False` | Start a server span per request (see above). Leave off when the service instruments itself. |
-| `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern. |
+| `query_param_allowlist` | `[]` | Query parameters whose values may be exported. Every other value is `[REDACTED]`, and so is an allowlisted name that matches a redaction pattern and is not on the [redaction allow-list](#automatic-redaction). |
 | `db_statement` | `"sanitize"` | `db.statement` / `db.query.text`: `"sanitize"` replaces string (including PostgreSQL dollar-quoted) and numeric literals with `?`, `"drop"` removes the attribute, `"keep"` exports it unchanged. |
 | `keep_client_address` | `False` | Keep the client IP address and port on server spans. |
 
-`additional_redaction_patterns` applies to spans too: to query parameter names
-and captured header names.
+`additional_redaction_patterns` and `redaction_allowlist` apply to spans too:
+to query parameter names and captured header names.
 
 ### correlation_id vs trace_id
 
@@ -665,8 +668,10 @@ dropped with a warning (`MetricRecordError` in strict mode).
 
 The record is [redacted](#every-line) like every line, except that metric values
 and the `_aws` envelope are written as they are: a metric named `TokensIssued`
-keeps its count. A dimension whose name matches a redaction pattern is written
-as `[REDACTED]`, and so becomes the dimension value CloudWatch records.
+keeps its count. A dimension whose name matches a redaction pattern, and is not
+on the [allow-list](#automatic-redaction), is written as `[REDACTED]`, and so
+becomes the dimension value CloudWatch records: `TokenScope` is, `TokenType` is
+not.
 
 ### Timing Dependency Calls
 
@@ -1054,19 +1059,39 @@ as `[REDACTED]`:
 Matching is by substring: `user_password` and `x-farsight-auth` match, and so
 does `tokenizer`.
 
-Add custom patterns via configuration. Patterns passed to either call apply to
-every line; those in `ObservabilityConfig` also apply to the middleware's
-request and response fields and to spans.
+Names on the allow-list match a pattern but are kept:
+
+- LLM usage counts and limits, as the OpenAI, Anthropic and Gemini SDKs name
+  them: `prompt_tokens`, `completion_tokens`, `input_tokens`, `output_tokens`,
+  `cache_read_input_tokens`, `prompt_token_count`, `token_count`, `max_tokens`,
+  and the rest of `DEFAULT_REDACTION_ALLOWLIST` in `auditry.redaction`;
+- OAuth's `token_type` (`Bearer`) and `token_type_hint` (`refresh_token`).
+
+An entry matches a whole name, ignoring case, `_` and `-`: `prompt_tokens`
+keeps `PromptTokens` and `prompt-tokens`, but not `prompt_tokens_secret`. A kept
+field is never replaced whole; its value is still scanned as text, so
+`"token_type": "Bearer abc"` is written as `"token_type": "Bearer [REDACTED]"`.
+
+Add custom patterns and allow-list entries via configuration. Those passed to
+either call apply to every line; those in `ObservabilityConfig` also apply to
+the middleware's request and response fields and to spans.
+
+- An allow-list entry wins over every pattern, the service's own included.
+- A pattern that names a default allow-list entry, compared the same way, takes
+  it off the list: `additional_redaction_patterns=["total_tokens"]` redacts
+  `total_tokens` again. A pattern that only contains one (`"prompt"`) does not.
 
 ```python
 configure_logging(
     service="my-service-name",
     additional_redaction_patterns=["internal_token", "employee_id"],
+    redaction_allowlist=["approx_tokens"],
 )
 
 config = ObservabilityConfig(
     service_name="my-service-name",
     additional_redaction_patterns=["internal_token", "employee_id"],
+    redaction_allowlist=["approx_tokens"],
 )
 ```
 
@@ -1103,8 +1128,8 @@ Limits:
   customer content, which has no names to match: keep bodies off and exception
   messages off (see below).
 - The root schema fields (`message`, `service`, `level`, `correlation_id`, …)
-  are never replaced whole, whatever the patterns; their text is still
-  scanned.
+  are never replaced whole, whatever the patterns and the allow-list; their
+  text is still scanned.
 - In a metric record, metric values are never replaced, so CloudWatch still
   extracts them; a dimension whose name matches is (see
   [Metrics Ride the Log Pipeline](#metrics-ride-the-log-pipeline)).

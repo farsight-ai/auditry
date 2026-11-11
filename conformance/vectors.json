@@ -90,6 +90,84 @@
       }
     },
     {
+      "name": "redact-allowlist-defaults",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 30,
+            "completion_tokens_details": {
+              "reasoning_tokens": 8
+            }
+          },
+          "PromptTokens": 12,
+          "max-tokens": 1000,
+          "token_type": "Bearer",
+          "access_token": "a-1",
+          "prompt_tokens_secret": "s-1"
+        }
+      },
+      "expected": {
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 30,
+          "completion_tokens_details": {
+            "reasoning_tokens": 8
+          }
+        },
+        "PromptTokens": 12,
+        "max-tokens": 1000,
+        "token_type": "Bearer",
+        "access_token": "[REDACTED]",
+        "prompt_tokens_secret": "[REDACTED]"
+      }
+    },
+    {
+      "name": "redact-allowlist-additional",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "approx_tokens": 5,
+          "secret_id": "db-creds",
+          "token": "t-1"
+        },
+        "allowlist": [
+          "approx_tokens",
+          "Secret-ID"
+        ]
+      },
+      "expected": {
+        "approx_tokens": 5,
+        "secret_id": "db-creds",
+        "token": "[REDACTED]"
+      }
+    },
+    {
+      "name": "redact-allowlist-retracted-by-a-pattern",
+      "kind": "redact",
+      "input": {
+        "data": {
+          "prompt_tokens": 12,
+          "total_tokens": 42,
+          "approx_tokens": 5
+        },
+        "additional_patterns": [
+          "PROMPT_TOKENS",
+          "approx_tokens",
+          "prompt"
+        ],
+        "allowlist": [
+          "approx_tokens"
+        ]
+      },
+      "expected": {
+        "prompt_tokens": "[REDACTED]",
+        "total_tokens": 42,
+        "approx_tokens": 5
+      }
+    },
+    {
       "name": "redact-list-root",
       "kind": "redact",
       "input": {
@@ -778,6 +856,43 @@
       ]
     },
     {
+      "name": "log-redaction-allowlist",
+      "kind": "log",
+      "input": {
+        "configure": {
+          "service": "conformance-svc",
+          "redaction_allowlist": [
+            "approx_tokens",
+            "is_token_limit_error"
+          ]
+        },
+        "calls": [
+          {
+            "level": "info",
+            "message": "input limit: approx_tokens=150000 token_count=7 access_token=abc",
+            "fields": {
+              "input_tokens": 5,
+              "is_token_limit_error": true,
+              "token_type": "Bearer abc.def",
+              "refresh_token": "r-1"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "input_tokens": 5,
+          "is_token_limit_error": true,
+          "token_type": "Bearer [REDACTED]",
+          "refresh_token": "[REDACTED]",
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "input limit: approx_tokens=150000 token_count=7 access_token=[REDACTED]"
+        }
+      ]
+    },
+    {
       "name": "metric-line-carries-root-schema",
       "kind": "metric_line",
       "input": {
@@ -842,6 +957,58 @@
             "name": "TokensIssued",
             "value": 3,
             "dimensions": {
+              "TokenScope": "read"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "_aws": {
+            "Timestamp": "<epoch-ms>",
+            "CloudWatchMetrics": [
+              {
+                "Namespace": "Farsight/Conformance",
+                "Dimensions": [
+                  [
+                    "Service",
+                    "TokenScope"
+                  ]
+                ],
+                "Metrics": [
+                  {
+                    "Name": "TokensIssued",
+                    "Unit": "Count"
+                  }
+                ]
+              }
+            ]
+          },
+          "Service": "conformance-svc",
+          "TokenScope": "[REDACTED]",
+          "TokensIssued": 3,
+          "level": "info",
+          "timestamp": "<timestamp>",
+          "service": "conformance-svc",
+          "message": "metric"
+        }
+      ]
+    },
+    {
+      "name": "metric-line-dimension-on-the-redaction-allowlist",
+      "kind": "metric_line",
+      "input": {
+        "configure": {
+          "service": "conformance-svc"
+        },
+        "namespace": "Farsight/Conformance",
+        "service": "conformance-svc",
+        "calls": [
+          {
+            "op": "count",
+            "name": "TokensIssued",
+            "value": 3,
+            "dimensions": {
               "TokenType": "refresh"
             }
           }
@@ -870,7 +1037,7 @@
             ]
           },
           "Service": "conformance-svc",
-          "TokenType": "[REDACTED]",
+          "TokenType": "refresh",
           "TokensIssued": 3,
           "level": "info",
           "timestamp": "<timestamp>",

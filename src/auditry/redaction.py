@@ -32,7 +32,62 @@ DEFAULT_REDACTION_PATTERNS: list[str] = [
     "xsrf",
 ]
 
+# Names that contain a pattern but never hold a credential, so they are never
+# replaced whole (their values are still scanned): LLM usage counts and limits
+# as the OpenAI, Anthropic and Gemini SDKs name them, and OAuth's token_type
+# (RFC 6749 5.1, "Bearer") and token_type_hint (RFC 7009 2.1, "refresh_token").
+DEFAULT_REDACTION_ALLOWLIST: list[str] = [
+    # OpenAI usage
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_tokens_details",
+    "completion_tokens_details",
+    "cached_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "audio_tokens",
+    "text_tokens",
+    "image_tokens",
+    "accepted_prediction_tokens",
+    "rejected_prediction_tokens",
+    # Anthropic usage
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "ephemeral_5m_input_tokens",
+    "ephemeral_1h_input_tokens",
+    "output_tokens_details",
+    "thinking_tokens",
+    # Gemini usage
+    "prompt_token_count",
+    "candidates_token_count",
+    "cached_content_token_count",
+    "thoughts_token_count",
+    "tool_use_prompt_token_count",
+    "total_token_count",
+    "candidates_tokens_details",
+    "cache_tokens_details",
+    "tool_use_prompt_tokens_details",
+    "token_count",
+    # Request limits
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    # OAuth
+    "token_type",
+    "token_type_hint",
+]
+
 REDACTED_VALUE = "[REDACTED]"
+
+
+def _fold_name(name: str) -> str:
+    """A name as the allow-list compares it: lowercased, without ``_`` or
+    ``-``, so ``token_count``, ``TokenCount`` and ``token-count`` are one name."""
+    return name.lower().replace("_", "").replace("-", "")
+
 
 # Characters of a field or header name written in text. A name starts only
 # where the previous character is not one of these, which keeps every scan
@@ -115,26 +170,38 @@ class SensitiveDataRedactor:
     Redacts sensitive data from dictionaries, JSON-serializable objects and text.
 
     A field whose name contains a pattern (case-insensitive) has its value
-    replaced with the redaction marker, in nested dictionaries and lists too.
+    replaced with the redaction marker, in nested dictionaries and lists too,
+    unless its whole name is on the allow-list.
     """
 
-    def __init__(self, additional_patterns: list[str] = None):
+    def __init__(
+        self, additional_patterns: list[str] | None = None, allowlist: list[str] | None = None
+    ):
         """
         Initialize redactor with field patterns to redact.
 
         Args:
-            additional_patterns: Additional field name patterns beyond defaults
+            additional_patterns: Additional field name patterns beyond defaults.
+                One that is a ``DEFAULT_REDACTION_ALLOWLIST`` name, compared as
+                the allow-list compares names, takes that name off the list.
+            allowlist: Field names never replaced whole, beyond
+                ``DEFAULT_REDACTION_ALLOWLIST``. They win over every pattern.
         """
         self.patterns: set[str] = {pattern.lower() for pattern in DEFAULT_REDACTION_PATTERNS}
         if additional_patterns:
             self.patterns.update(pattern.lower() for pattern in additional_patterns)
+        retracted = {_fold_name(pattern) for pattern in self.patterns}
+        self.allowlist: frozenset[str] = frozenset(
+            {_fold_name(name) for name in DEFAULT_REDACTION_ALLOWLIST} - retracted
+        ).union(_fold_name(name) for name in allowlist or ())
 
     def should_redact(self, field_name: str) -> bool:
         """
         Determine if a field should be redacted based on its name.
 
-        Performs case-insensitive matching against known sensitive
-        field patterns.
+        Performs case-insensitive substring matching against known sensitive
+        field patterns (``user_password`` matches ``password``). A name on the
+        allow-list is never redacted; it must match an entry whole.
 
         Args:
             field_name: Name of the field to check
@@ -143,11 +210,9 @@ class SensitiveDataRedactor:
             True if field should be redacted, False otherwise
         """
         field_lower = field_name.lower()
-        # Exact match
-        if field_lower in self.patterns:
-            return True
-        # Partial match (e.g., "user_password" matches "password")
-        return any(pattern in field_lower for pattern in self.patterns)
+        if not any(pattern in field_lower for pattern in self.patterns):
+            return False
+        return _fold_name(field_lower) not in self.allowlist
 
     def redact(self, data: Any) -> Any:
         """
@@ -269,19 +334,22 @@ def redact_headers(headers: dict[str, str]) -> dict[str, str]:
     return _default_redactor.redact(headers)
 
 
-def redact_data(data: Any, additional_patterns: list[str] = None) -> Any:
+def redact_data(
+    data: Any, additional_patterns: list[str] | None = None, allowlist: list[str] | None = None
+) -> Any:
     """
     Convenience function to redact sensitive data.
 
     Args:
         data: Data structure to redact
         additional_patterns: Optional additional field patterns to redact
+        allowlist: Optional field names never replaced whole, beyond the defaults
 
     Returns:
         Redacted copy of the data
     """
-    if additional_patterns:
+    if additional_patterns or allowlist:
         # Only create new instance if custom patterns are needed
-        redactor = SensitiveDataRedactor(additional_patterns)
+        redactor = SensitiveDataRedactor(additional_patterns, allowlist)
         return redactor.redact(data)
     return _default_redactor.redact(data)

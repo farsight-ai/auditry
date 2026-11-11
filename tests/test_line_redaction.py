@@ -186,13 +186,84 @@ class TestPatterns:
         assert line["chat_message"] == "[REDACTED]"
 
 
+class TestAllowlist:
+    """Names that match a pattern but are kept on every line."""
+
+    def test_default_allowlist(self, capsys):
+        configure_logging(service="svc")
+        get_logger("t").info(
+            f"usage prompt_tokens=12 token={LEAKED}",
+            usage={"input_tokens": 5, "output_tokens": 7},
+            token_count=12,
+            access_token=LEAKED,
+        )
+        line = only_line(capsys)
+        assert line["message"] == "usage prompt_tokens=12 token=[REDACTED]"
+        assert line["usage"] == {"input_tokens": 5, "output_tokens": 7}
+        assert line["token_count"] == 12
+        assert line["access_token"] == "[REDACTED]"
+
+    def test_configure_logging_allowlist_and_retraction(self, capsys):
+        configure_logging(
+            service="svc",
+            additional_redaction_patterns=["total_tokens"],
+            redaction_allowlist=["approx_tokens"],
+        )
+        get_logger("t").info("limit", approx_tokens=150000, total_tokens=42, prompt_tokens=12)
+        line = only_line(capsys)
+        assert line["approx_tokens"] == 150000
+        assert line["total_tokens"] == "[REDACTED]"
+        assert line["prompt_tokens"] == 12
+
+    @pytest.mark.parametrize(
+        "create_middleware", [create_fastapi_middleware, create_quart_middleware]
+    )
+    def test_config_allowlist_applies_to_every_line(self, capsys, create_middleware):
+        app = FastAPI() if create_middleware is create_fastapi_middleware else Quart(__name__)
+        configure_logging(service="svc")
+        create_middleware(
+            app,
+            ObservabilityConfig(
+                service_name="svc",
+                log_request_body=False,
+                log_response_body=False,
+                additional_redaction_patterns=["grant"],
+                redaction_allowlist=["grant_id"],
+            ),
+        )
+        logging.getLogger("app").info("issued grant_id=g-1 grant_secret=%s", LEAKED)
+        assert only_line(capsys)["message"] == "issued grant_id=g-1 grant_secret=[REDACTED]"
+
+    def test_config_allowlist_applies_to_bodies(self, capsys):
+        configure_logging(service="svc")
+        config = ObservabilityConfig(
+            service_name="svc",
+            log_request_body=True,
+            log_response_body=True,
+            redaction_allowlist=["approx_tokens"],
+        )
+        create_fastapi_middleware(FastAPI(), config)
+        rrl = RequestResponseLogger(config)
+        request = rrl.prepare_request_data({"method": "POST", "path": "/x"})
+        body = {"usage": {"prompt_tokens": 3}, "approx_tokens": 9, "token": LEAKED}
+        response = rrl.prepare_response_data(
+            {"status_code": 200, "body": json.dumps(body).encode()}
+        )
+        rrl.log_success(request, response, 1.0)
+        assert only_line(capsys)["response"]["body"] == {
+            "usage": {"prompt_tokens": 3},
+            "approx_tokens": 9,
+            "token": "[REDACTED]",
+        }
+
+
 class TestMetricRecords:
     """EMF records ride the same pipeline: CloudWatch must still extract them."""
 
     def test_metric_named_like_a_pattern_keeps_its_value(self, capsys):
         configure_logging(service="svc", additional_redaction_patterns=["name", "unit"])
         MetricsLogger(namespace="Farsight/Test", service="svc").count(
-            "TokensIssued", 3, dimensions={"TokenType": "refresh"}
+            "TokensIssued", 3, dimensions={"TokenScope": "read", "TokenType": "refresh"}
         )
         line = only_line(capsys)
         assert line["TokensIssued"] == 3
@@ -200,5 +271,7 @@ class TestMetricRecords:
             {"Name": "TokensIssued", "Unit": "Count"}
         ]
         assert line["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "Farsight/Test"
-        # A dimension is not a metric value: a matching one is redacted.
-        assert line["TokenType"] == "[REDACTED]"
+        # A dimension is not a metric value: a matching one is redacted,
+        # unless its name is on the allow-list.
+        assert line["TokenScope"] == "[REDACTED]"
+        assert line["TokenType"] == "refresh"

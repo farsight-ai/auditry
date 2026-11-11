@@ -123,6 +123,14 @@ class ObservabilityConfig(BaseModel):
             "create_middleware() has run"
         ),
     )
+    redaction_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Field names never replaced whole, beyond the built-in allow-list, "
+            "wherever additional_redaction_patterns apply. A name matches when "
+            "it equals an entry, ignoring case, '_' and '-'"
+        ),
+    )
     log_request_headers: bool = Field(
         default=True, description="Whether to log request headers (redacted)"
     )

@@ -168,6 +168,8 @@ def _set_config_service(service_name: str | None) -> None:
 
 _logging_redaction_patterns: tuple[str, ...] = ()
 _config_redaction_patterns: tuple[str, ...] = ()
+_logging_redaction_allowlist: tuple[str, ...] = ()
+_config_redaction_allowlist: tuple[str, ...] = ()
 _line_redactor = SensitiveDataRedactor()
 
 # The root schema and the fields auditry writes itself. Their values are
@@ -195,22 +197,25 @@ _SCHEMA_FIELDS = frozenset(
 _EMF_ENVELOPE = "_aws"
 
 
-def _set_logging_redaction_patterns(patterns: Iterable[str] | None) -> None:
-    global _logging_redaction_patterns
+def _set_logging_redaction(patterns: Iterable[str] | None, allowlist: Iterable[str] | None) -> None:
+    global _logging_redaction_patterns, _logging_redaction_allowlist
     _logging_redaction_patterns = tuple(patterns or ())
+    _logging_redaction_allowlist = tuple(allowlist or ())
     _rebuild_line_redactor()
 
 
-def _set_config_redaction_patterns(patterns: Iterable[str] | None) -> None:
-    global _config_redaction_patterns
+def _set_config_redaction(patterns: Iterable[str] | None, allowlist: Iterable[str] | None) -> None:
+    global _config_redaction_patterns, _config_redaction_allowlist
     _config_redaction_patterns = tuple(patterns or ())
+    _config_redaction_allowlist = tuple(allowlist or ())
     _rebuild_line_redactor()
 
 
 def _rebuild_line_redactor() -> None:
     global _line_redactor
     _line_redactor = SensitiveDataRedactor(
-        [*_logging_redaction_patterns, *_config_redaction_patterns]
+        [*_logging_redaction_patterns, *_config_redaction_patterns],
+        [*_logging_redaction_allowlist, *_config_redaction_allowlist],
     )
 
 
@@ -234,8 +239,8 @@ def _emf_metric_names(envelope: Any) -> frozenset[str]:
 
 def _redact_event(event_dict: Mapping[str, Any]) -> dict[str, Any]:
     """A redacted copy of a line's fields: a field whose name matches a
-    pattern becomes ``[REDACTED]``, at any depth, and every string passes
-    through ``SensitiveDataRedactor.redact_text``."""
+    pattern, and is not on the allow-list, becomes ``[REDACTED]``, at any
+    depth, and every string passes through ``SensitiveDataRedactor.redact_text``."""
     redactor = _line_redactor
     metric_names = _emf_metric_names(event_dict.get(_EMF_ENVELOPE))
     redacted: dict[str, Any] = {}
@@ -389,6 +394,7 @@ def configure_logging(
     environment: str | None = None,
     strict: bool | None = None,
     additional_redaction_patterns: list[str] | None = None,
+    redaction_allowlist: list[str] | None = None,
 ) -> None:
     """
     Configure application-wide structured logging using structlog.
@@ -400,7 +406,8 @@ def configure_logging(
 
     Every line is redacted with the default patterns, ``additional_redaction_patterns``
     and ``ObservabilityConfig.additional_redaction_patterns`` (once
-    ``create_middleware()`` has run).
+    ``create_middleware()`` has run), except names on the allow-list: the
+    defaults, ``redaction_allowlist`` and ``ObservabilityConfig.redaction_allowlist``.
 
     Also resolves **strict mode** — whether instrumentation failures raise
     (non-production) or degrade to drop-and-warn (production). Resolution,
@@ -418,7 +425,10 @@ def configure_logging(
         strict: Force strict mode on or off. Leave unset to derive it from
             the environment (see above).
         additional_redaction_patterns: Field name patterns redacted on every
-            line, beyond the defaults.
+            line, beyond the defaults. One naming a default allow-listed name
+            takes it off the allow-list.
+        redaction_allowlist: Field names never replaced whole on any line,
+            beyond the default allow-list. They win over every pattern.
     """
     global _full_tracebacks, _strict
 
@@ -431,7 +441,7 @@ def configure_logging(
     _service_context.update({k: v for k, v in resolved.items() if v})
     _full_tracebacks = os.environ.get(_FULL_TRACEBACKS_ENV, "").lower() in ("1", "true", "yes")
     _strict = _resolve_strict(strict, resolved["environment"])
-    _set_logging_redaction_patterns(additional_redaction_patterns)
+    _set_logging_redaction(additional_redaction_patterns, redaction_allowlist)
 
     # The schema processors are shared by structlog-originated events and
     # foreign stdlib records (uvicorn, boto3, any library calling

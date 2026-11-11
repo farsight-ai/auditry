@@ -38,6 +38,7 @@ class TestPolicy:
             log_request_body=False,
             log_response_body=False,
             additional_redaction_patterns=["tenant_secret"],
+            redaction_allowlist=["approx_tokens"],
             tracing={
                 "query_param_allowlist": ["page"],
                 "db_statement": "drop",
@@ -47,6 +48,7 @@ class TestPolicy:
         assert SpanScrubPolicy.from_config(config) == SpanScrubPolicy(
             query_param_allowlist=frozenset({"page"}),
             redaction_patterns=("tenant_secret",),
+            redaction_allowlist=("approx_tokens",),
             db_statement="drop",
             keep_client_address=True,
         )
@@ -100,6 +102,13 @@ class TestQueryStrings:
     def test_allowlisted_key_matching_a_redaction_pattern_is_redacted(self):
         policy = SpanScrubPolicy(query_param_allowlist=frozenset({"token", "page"}))
         assert scrub_query("token=abc&page=2", policy) == f"token={R}&page=2"
+
+    def test_allowlisted_key_on_the_redaction_allowlist_survives(self):
+        policy = SpanScrubPolicy(
+            query_param_allowlist=frozenset({"max_tokens", "approx_tokens"}),
+            redaction_allowlist=("approx_tokens",),
+        )
+        assert scrub_query("max_tokens=5&approx_tokens=9", policy) == "max_tokens=5&approx_tokens=9"
 
     def test_additional_redaction_patterns_apply(self):
         policy = SpanScrubPolicy(

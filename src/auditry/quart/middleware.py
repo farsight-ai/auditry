@@ -18,7 +18,7 @@ from werkzeug.exceptions import HTTPException
 
 from ..core import BaseMiddleware, RequestResponseLogger
 from ..correlation import get_correlation_id
-from ..logging_config import _set_config_redaction_patterns, _set_config_service
+from ..logging_config import _set_config_redaction, _set_config_service
 from ..models import ObservabilityConfig
 from ..path_matcher import should_exclude_path
 from ..propagation import _set_correlation_header
@@ -275,7 +275,7 @@ def create_middleware(app: Quart, config: ObservabilityConfig) -> Quart:
         ```
     """
     _set_config_service(config.service_name)
-    _set_config_redaction_patterns(config.additional_redaction_patterns)
+    _set_config_redaction(config.additional_redaction_patterns, config.redaction_allowlist)
     set_span_scrub_policy(SpanScrubPolicy.from_config(config))
     _set_correlation_header(config.correlation_id_header)
 

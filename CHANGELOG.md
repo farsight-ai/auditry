@@ -19,6 +19,18 @@ change; field names, the root schema and metric values are unchanged.
 - `configure_logging(additional_redaction_patterns=...)`, for workers and other
   processes without the middleware. `ObservabilityConfig.additional_redaction_patterns`
   now applies to every line too, once `create_middleware()` has run.
+- **Redaction allow-list**: names that match a pattern but are kept, so lines
+  keep the counts services already log. `DEFAULT_REDACTION_ALLOWLIST` holds LLM
+  usage counts and limits as the OpenAI, Anthropic and Gemini SDKs name them
+  (`prompt_tokens`, `input_tokens`, `token_count`, `max_tokens`, ...) and
+  OAuth's `token_type` / `token_type_hint`; `configure_logging(redaction_allowlist=...)`
+  and `ObservabilityConfig.redaction_allowlist` add to it, wherever the matching
+  `additional_redaction_patterns` apply, and win over every pattern. An entry
+  matches a whole name, ignoring case, `_` and `-`; a kept value is still
+  scanned. A pattern that names a default entry takes it off the list. These
+  names are now also kept in the middleware's request and response fields and
+  in spans, where `prompt_tokens` and the rest were redacted before. README:
+  "Automatic Redaction".
 - `farsight-auth`, the gateway's credential header, is a default pattern. It
   was not redacted: matching is by substring, and `x-auth` is not one of
   `farsight-auth`.
@@ -32,8 +44,9 @@ change; field names, the root schema and metric values are unchanged.
 
 - The trace handler's `event_dict` is redacted as the line is. `exc_info` is
   still the live exception.
-- In a metric record, a dimension whose name matches a pattern is written as
-  `[REDACTED]`, which CloudWatch then records as the dimension value. Metric
+- In a metric record, a dimension whose name matches a pattern, and is not on
+  the allow-list, is written as `[REDACTED]`, which CloudWatch then records as
+  the dimension value. Metric
   values and the `_aws` envelope are never redacted.
 - A request or response body that the middleware cannot parse as JSON (a form
   body, a body truncated at `payload_size_limit`) is no longer logged

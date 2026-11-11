@@ -2,7 +2,14 @@
 
 import pytest
 
-from auditry.redaction import SensitiveDataRedactor, redact_data, redact_headers
+from auditry.redaction import (
+    DEFAULT_REDACTION_ALLOWLIST,
+    DEFAULT_REDACTION_PATTERNS,
+    REDACTED_VALUE,
+    SensitiveDataRedactor,
+    redact_data,
+    redact_headers,
+)
 
 
 def test_redact_password():
@@ -145,3 +152,62 @@ class TestRedactAll:
     def test_json_native_values_are_kept(self):
         data = {"count": 2, "ratio": 0.5, "ok": True, "none": None, "name": "n"}
         assert SensitiveDataRedactor().redact_all(data) == data
+
+
+class TestAllowlist:
+    """Names that match a pattern but are kept: the defaults, a service's own,
+    and a service taking a default back off the list."""
+
+    def test_every_default_name_matches_a_default_pattern(self):
+        """An entry no pattern matches would never change anything."""
+        redactor = SensitiveDataRedactor(allowlist=[])
+        for name in DEFAULT_REDACTION_ALLOWLIST:
+            assert any(pattern in name for pattern in DEFAULT_REDACTION_PATTERNS), name
+            assert not redactor.should_redact(name), name
+
+    @pytest.mark.parametrize(
+        "name", ["prompt_tokens", "PromptTokens", "prompt-tokens", "PROMPT_TOKENS", "token_count"]
+    )
+    def test_a_default_name_is_kept_whatever_its_case_and_separators(self, name):
+        assert redact_data({name: 12}) == {name: 12}
+
+    @pytest.mark.parametrize("name", ["prompt_tokens_secret", "my_token_count", "prompt.tokens"])
+    def test_only_a_whole_name_is_allowed(self, name):
+        assert redact_data({name: "x"}) == {name: REDACTED_VALUE}
+
+    def test_nested_usage_is_kept(self):
+        usage = {"usage": {"input_tokens": 5, "cache_read_input_tokens": 2, "output_tokens": 7}}
+        assert redact_data(usage) == usage
+
+    def test_service_allowlist(self):
+        data = {"approx_tokens": 5, "secret_id": "db-creds", "token": "t"}
+        assert redact_data(data, allowlist=["approx_tokens", "Secret-ID"]) == {
+            "approx_tokens": 5,
+            "secret_id": "db-creds",
+            "token": REDACTED_VALUE,
+        }
+
+    def test_a_pattern_naming_a_default_takes_it_off_the_list(self):
+        redactor = SensitiveDataRedactor(["Prompt-Tokens"])
+        assert redactor.should_redact("prompt_tokens")
+        assert not redactor.should_redact("completion_tokens")
+
+    def test_a_pattern_that_only_contains_a_default_leaves_it_on_the_list(self):
+        assert not SensitiveDataRedactor(["prompt"]).should_redact("prompt_tokens")
+
+    def test_the_service_allowlist_wins_over_its_own_patterns(self):
+        redactor = SensitiveDataRedactor(["grant", "prompt_tokens"], ["grant_id", "prompt_tokens"])
+        assert not redactor.should_redact("grant_id")
+        assert not redactor.should_redact("prompt_tokens")
+        assert redactor.should_redact("grant_secret")
+
+    def test_an_allowed_value_is_still_scanned(self):
+        redacted = SensitiveDataRedactor().redact_all({"token_type": "Bearer abc.def"})
+        assert redacted == {"token_type": "Bearer [REDACTED]"}
+
+    def test_text(self):
+        redactor = SensitiveDataRedactor(allowlist=["approx_tokens"])
+        assert (
+            redactor.redact_text("approx_tokens=150000 TokenCount: 7 token=abc")
+            == "approx_tokens=150000 TokenCount: 7 token=[REDACTED]"
+        )

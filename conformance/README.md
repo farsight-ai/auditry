@@ -20,7 +20,7 @@ Neither file ships in the wheel.
 
 | File | Holds |
 | --- | --- |
-| `contract.json` | The tables a port reads rather than restates: redaction patterns and marker, forbidden dimension patterns, limits, reserved record keys, non-production environment names, the `AUDITRY_*` environment variables |
+| `contract.json` | The tables a port reads rather than restates: redaction patterns, allow-list and marker, forbidden dimension patterns, limits, reserved record keys, non-production environment names, the `AUDITRY_*` environment variables |
 | `vectors.json` | Cases: an input and the output auditry produces for it |
 
 Names that appear only as literals in the code (`Service`, `Dependency`,
@@ -50,9 +50,9 @@ optionally `requires`: what a port must be able to represent to run it (see
 
 | Kind | Input | Expected |
 | --- | --- | --- |
-| `redact` | `data`, optional `additional_patterns` | the redacted copy of `data` |
+| `redact` | `data`, optional `additional_patterns`, `allowlist` | the redacted copy of `data` |
 | `strict` | optional `explicit` (the `strict=` argument), `environment_variable` (`AUDITRY_STRICT`), `environment` | whether strict mode is on |
-| `log` | optional `configure` (`service`, `version`, `environment`, `additional_redaction_patterns`), `environment_variables`, `level` (minimum, default `INFO`), `correlation_id`; `calls` | every line written, in order |
+| `log` | optional `configure` (`service`, `version`, `environment`, `additional_redaction_patterns`, `redaction_allowlist`), `environment_variables`, `level` (minimum, default `INFO`), `correlation_id`; `calls` | every line written, in order |
 | `metric_line` | as `log`, plus `namespace` and `service` for a `MetricsLogger` writing through the configured pipeline; `calls` are metric calls | every line written |
 | `metrics` | `namespace`, `service`, optional `default_dimensions`, `strict` (default `false`); `calls` | `records`: raw EMF records; `warnings`: drop warnings; `raises`: the exception class name, when a call or the constructor raised |
 
@@ -66,6 +66,14 @@ in the text of every string. The `log-redacts-fields`,
 `log-redacts-message-text`, `log-additional-redaction-patterns` and
 `metric-line-name-matching-a-redaction-pattern` cases pin what that removes;
 [Every line](../README.md#every-line) says which text forms are found.
+
+A name on `contract.json`'s `allowlist` or the case's `allowlist` /
+`redaction_allowlist` is never replaced whole, by field name or in text. Names
+are compared whole, lowercased and without `_` or `-`. A pattern that equals a
+default `allowlist` name, compared the same way, takes it off the list; the
+case's own allow-list wins over every pattern. The `redact-allowlist-*`,
+`log-redaction-allowlist` and `metric-line-dimension-on-the-redaction-allowlist`
+cases pin this.
 
 A metric call is an `op` and its arguments: `emit` (`metrics`, `unit`, `units`,
 `dimensions`, `rollup_dimension_sets`, `dimension_sets`), `count` (`name`,
