@@ -15,6 +15,8 @@ from ..models import BusinessEventConfig, ObservabilityConfig
 from ..redaction import redact_data, redact_headers
 
 BODY_LOGGING_DISABLED = "[BODY_LOGGING_DISABLED]"
+# The path logged under log_route_template for a request no route template matched.
+UNKNOWN_ROUTE = "[UNKNOWN_ROUTE]"
 
 
 def _has_body(raw_data: dict[str, Any]) -> bool:
@@ -96,6 +98,17 @@ class RequestResponseLogger:
             prepared["body"] = BODY_LOGGING_DISABLED
 
         return prepared
+
+    def name_route(self, request_data: dict[str, Any], route: str | None) -> dict[str, Any]:
+        """``request_data`` as it is logged. With ``log_route_template``, ``route``,
+        or ``UNKNOWN_ROUTE`` when no template matched, replaces the concrete
+        path, and the path parameters' values are left out. Unchanged
+        otherwise."""
+        if not self.config.log_route_template:
+            return request_data
+        named = {key: value for key, value in request_data.items() if key != "path_params"}
+        named["path"] = route or UNKNOWN_ROUTE
+        return named
 
     def prepare_response_data(self, raw_data: dict[str, Any]) -> dict[str, Any]:
         """

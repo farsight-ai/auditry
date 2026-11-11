@@ -158,6 +158,18 @@ class ObservabilityConfig(BaseModel):
             "via auditry.set_trace_handler to a gated destination."
         ),
     )
+    log_route_template: bool = Field(
+        default=False,
+        description=(
+            "Log the template of the route that matched (FastAPI "
+            "'/builds/{build_id}', Quart '/builds/<build_id>') as the request's "
+            "path, and leave path_params out: a concrete path can name customer "
+            "content that redaction cannot tell from a route segment. A request "
+            "no route template matched (a 404, a plain Starlette route, a mounted "
+            "app that is not FastAPI) logs '[UNKNOWN_ROUTE]'. excluded_paths still "
+            "match the concrete path."
+        ),
+    )
     include_default_excluded_paths: bool = Field(
         default=True,
         description=(

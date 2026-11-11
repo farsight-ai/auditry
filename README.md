@@ -188,6 +188,11 @@ config = ObservabilityConfig(
     # Whether to log query parameters (default: True)
     log_query_params=True,
 
+    # Log the template of the route that matched ("/builds/{build_id}") as the
+    # path, without path parameters (default: False). See Logging Route
+    # Templates Instead of Paths.
+    log_route_template=False,
+
     # Whether to log request bodies. Bodies are user-supplied content that
     # field-name redaction cannot reliably scrub; set False unless you know
     # the bodies on every endpoint are safe to persist.
@@ -1234,6 +1239,26 @@ config = ObservabilityConfig(
 #    stays a real, tool-parseable traceback). Read once at configure_logging().
 #    AUDITRY_FULL_TRACEBACKS=true
 ```
+
+### Logging Route Templates Instead of Paths
+
+A request line names the concrete path by default. A path can carry what a
+customer named something (`/builds/acme-q3-deal_1a2b`), which no redaction
+pattern can tell from a route segment. With `log_route_template=True`, the line
+names the route that matched instead, in `request.path` and the message, and
+leaves `path_params` out:
+
+| Framework | Concrete path | Logged `path` |
+| --- | --- | --- |
+| FastAPI | `/builds/acme-q3-deal_1a2b/files` | `/builds/{build_id}/files` |
+| Quart | `/builds/acme-q3-deal_1a2b/files` | `/builds/<build_id>/files` |
+
+- A route under a FastAPI mount carries the mount's prefix.
+- A request no route template matched logs `[UNKNOWN_ROUTE]`: a 404, a plain
+  Starlette route, or a mounted app that is not FastAPI.
+- `excluded_paths` still match the concrete path.
+- Business events match the template, and `extract_from_path` finds no path
+  parameters.
 
 ### Excluding Paths
 

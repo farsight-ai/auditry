@@ -86,8 +86,12 @@ class QuartMiddleware(BaseMiddleware):
             )
             request.observability_raw_data = raw_request_data
 
-            request.observability_request_data = self.logger.prepare_request_data(
-                raw_request_data, request.observability_correlation_id
+            # Quart matches the route before before_request hooks run.
+            request.observability_request_data = self.logger.name_route(
+                self.logger.prepare_request_data(
+                    raw_request_data, request.observability_correlation_id
+                ),
+                request.url_rule.rule if request.url_rule is not None else None,
             )
 
         @self.app.after_request

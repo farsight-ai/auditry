@@ -22,6 +22,11 @@ change; field names, the root schema and metric values are unchanged.
 - `farsight-auth`, the gateway's credential header, is a default pattern. It
   was not redacted: matching is by substring, and `x-auth` is not one of
   `farsight-auth`.
+- `ObservabilityConfig.log_route_template`, off by default: the request line
+  names the route that matched (`/builds/{build_id}`) instead of the concrete
+  path, and leaves `path_params` out; `[UNKNOWN_ROUTE]` when no route template
+  matched. Off, lines are unchanged. README: "Logging Route Templates Instead
+  of Paths".
 
 ### Changed
 
