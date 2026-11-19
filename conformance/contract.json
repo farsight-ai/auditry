@@ -90,6 +90,7 @@
       "cache_tokens_details",
       "tool_use_prompt_tokens_details",
       "token_count",
+      "cache_read_tokens",
       "max_tokens",
       "max_completion_tokens",
       "max_output_tokens",

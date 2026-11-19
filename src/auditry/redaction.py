@@ -71,6 +71,8 @@ DEFAULT_REDACTION_ALLOWLIST: list[str] = [
     "cache_tokens_details",
     "tool_use_prompt_tokens_details",
     "token_count",
+    # Farsight's normalized usage, as relay and the data lake's token_count record name it
+    "cache_read_tokens",
     # Request limits
     "max_tokens",
     "max_completion_tokens",
