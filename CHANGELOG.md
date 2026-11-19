@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.7 (2026-11-19)
+
+### Fixed
+
+- `cache_read_tokens` is on `DEFAULT_REDACTION_ALLOWLIST`
+  ([DEV-3736](https://linear.app/farsight-ai/issue/DEV-3736/auditry-keep-cache-read-tokens-on-the-redaction-allow-list)).
+  0.6.6 replaced it with `[REDACTED]` (its name contains `token`) while keeping
+  `input_tokens`, `output_tokens` and `cache_write_tokens`, so lines naming
+  usage as relay and the data lake's token_count record do lost their
+  cache-read counts.
+
 ## 0.6.6 (2026-11-10)
 
 Output change for every line `configure_logging()` writes: credentials in it
