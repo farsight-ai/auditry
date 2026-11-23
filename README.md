@@ -1065,6 +1065,8 @@ Names on the allow-list match a pattern but are kept:
   them: `prompt_tokens`, `completion_tokens`, `input_tokens`, `output_tokens`,
   `cache_read_input_tokens`, `prompt_token_count`, `token_count`, `max_tokens`,
   and the rest of `DEFAULT_REDACTION_ALLOWLIST` in `auditry.redaction`;
+- Farsight's normalized usage name `cache_read_tokens`, as relay and the data
+  lake's token_count record use it;
 - OAuth's `token_type` (`Bearer`) and `token_type_hint` (`refresh_token`).
 
 An entry matches a whole name, ignoring case, `_` and `-`: `prompt_tokens`

@@ -34,7 +34,8 @@ DEFAULT_REDACTION_PATTERNS: list[str] = [
 
 # Names that contain a pattern but never hold a credential, so they are never
 # replaced whole (their values are still scanned): LLM usage counts and limits
-# as the OpenAI, Anthropic and Gemini SDKs name them, and OAuth's token_type
+# as the OpenAI, Anthropic and Gemini SDKs name them, Farsight's normalized
+# cache_read_tokens, and OAuth's token_type
 # (RFC 6749 5.1, "Bearer") and token_type_hint (RFC 7009 2.1, "refresh_token").
 DEFAULT_REDACTION_ALLOWLIST: list[str] = [
     # OpenAI usage
@@ -71,6 +72,8 @@ DEFAULT_REDACTION_ALLOWLIST: list[str] = [
     "cache_tokens_details",
     "tool_use_prompt_tokens_details",
     "token_count",
+    # Farsight's normalized usage, as relay and the data lake's token_count record name it
+    "cache_read_tokens",
     # Request limits
     "max_tokens",
     "max_completion_tokens",

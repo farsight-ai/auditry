@@ -203,6 +203,18 @@ class TestAllowlist:
         assert line["token_count"] == 12
         assert line["access_token"] == "[REDACTED]"
 
+    def test_token_count_record_names_are_kept(self, capsys):
+        configure_logging(service="svc")
+        counts = {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_read_tokens": 3,
+            "cache_write_tokens": 4,
+        }
+        get_logger("t").info("model usage", **counts)
+        line = only_line(capsys)
+        assert {name: line[name] for name in counts} == counts
+
     def test_configure_logging_allowlist_and_retraction(self, capsys):
         configure_logging(
             service="svc",
